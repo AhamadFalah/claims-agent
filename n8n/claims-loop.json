@@ -2,75 +2,208 @@
   "name": "claims-loop",
   "nodes": [
     {
-      "parameters": { "httpMethod": "POST", "path": "claim-intake" },
+      "id": "node-webhook",
       "name": "Webhook: claim-intake",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
-      "position": [240, 300]
+      "typeVersion": 2.1,
+      "position": [240, 380],
+      "webhookId": "claim-intake",
+      "onError": "continueRegularOutput",
+      "notes": "POST /claim-intake. Accepts multipart/form-data; the uploaded photo lands in binary property 'data'. Responds via the Respond to Webhook nodes.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "claim-intake",
+        "responseMode": "responseNode",
+        "options": { "binaryPropertyName": "data" }
+      }
     },
     {
+      "id": "node-init",
+      "name": "Generate correlation_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 380],
+      "notes": "Step 2: generate correlation_id (UUID) BEFORE any Attio call so retries are idempotent. Also normalizes form fields and derives the merchant SERVER-SIDE (the customer never picks it). Sets parcel_value = merchant ceiling (the value submitted to Evri), kept separate from cost_value (customer-stated).",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const inp = $input.first().json;\nconst b = inp.body || inp;\n\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Normalize incoming form fields\nconst email = String(b.email || '').trim().toLowerCase();\nconst name = String(b.name || b.customer_name || '').trim();\nconst phone = String(b.phone || b.phone_number || '').trim();\nconst courier = String(b.courier || 'Evri').trim();\nconst claim_type = String(b.claim_type || 'Lost').trim();\nconst tracking_number = String(b.tracking_number || '').trim();\nconst additional_tracking = String(b.additional_tracking || '').trim();\nconst order_number = String(b.order_number || '').trim();\nconst delivery_postcode = String(b.delivery_postcode || b.postcode || '').trim();\nconst parcel_count = Number(b.parcel_count || 1);\nconst cost_value = Number(b.cost_value || 0); // customer-stated cost of goods\nconst customer_comment = String(b.customer_comment || b.comment || '').trim();\n\n// Resolve merchant SERVER-SIDE (the customer never selects this).\n// Keyed off submission context: a per-merchant token the form embeds (merchant_key)\n// or a ?m= query param on the webhook URL.\nconst merchant_key = String(b.merchant_key || (inp.query && inp.query.m) || 'demo').trim();\nconst MERCHANTS = {\n  'brand-a': { name: 'Brand A Ltd', domain: 'brand-a.example', ceiling: 20 },\n  'brand-b': { name: 'Brand B Ltd', domain: 'brand-b.example', ceiling: 25 },\n  'demo': { name: 'Demo Merchant', domain: 'demo-merchant.example', ceiling: 20 }\n};\nconst merchant = MERCHANTS[merchant_key] || MERCHANTS['demo'];\n\n// Pricing rule: parcel_value submitted to Evri = merchant ceiling.\n// KEEP SEPARATE from cost_value. Client credit = min(cost_value, ceiling).\nconst parcel_value = merchant.ceiling;\n\nreturn [{ json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment, merchant\n} }];"
+      }
+    },
+    {
+      "id": "node-person",
+      "name": "Upsert Person",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [680, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 3: PUT /v2/objects/people/records, matching on email_addresses. Returns the person record id at data.id.record_id.",
+      "parameters": {
+        "method": "PUT",
+        "url": "https://api.attio.com/v2/objects/people/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "matching_attribute", "value": "email_addresses" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { data: { values: { name: $json.name, email_addresses: [$json.email], phone_numbers: $json.phone ? [$json.phone] : [] } } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+    },
+    {
+      "id": "node-merchant",
+      "name": "Upsert Merchant (companies)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [900, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 4: resolve merchant -> companies record id. Upserts the server-side-derived merchant by domain and sets its ceiling. Returns the company record id at data.id.record_id.",
+      "parameters": {
+        "method": "PUT",
+        "url": "https://api.attio.com/v2/objects/companies/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "matching_attribute", "value": "domains" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { data: { values: { name: $('Generate correlation_id').item.json.merchant.name, domains: [$('Generate correlation_id').item.json.merchant.domain], ceiling: $('Generate correlation_id').item.json.merchant.ceiling } } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+    },
+    {
+      "id": "node-claim",
+      "name": "Create Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1120, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 5: POST /v2/objects/claims/records. Links customer (people) + merchant (companies), status New. parcel_value = ceiling submitted to Evri; cost_value = customer-stated. Returns claim record id at data.id.record_id.",
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8000/claims/extract",
+        "url": "https://api.attio.com/v2/objects/claims/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { data: { values: { correlation_id: $('Generate correlation_id').item.json.correlation_id, order_number: $('Generate correlation_id').item.json.order_number, courier: $('Generate correlation_id').item.json.courier, tracking_number: $('Generate correlation_id').item.json.tracking_number, additional_tracking: $('Generate correlation_id').item.json.additional_tracking, claim_type: $('Generate correlation_id').item.json.claim_type, parcel_count: $('Generate correlation_id').item.json.parcel_count, delivery_postcode: $('Generate correlation_id').item.json.delivery_postcode, phone_number: $('Generate correlation_id').item.json.phone, customer_comment: $('Generate correlation_id').item.json.customer_comment, status: 'New', cost_value: $('Generate correlation_id').item.json.cost_value, parcel_value: $('Generate correlation_id').item.json.parcel_value, customer: [{ target_object: 'people', target_record_id: $('Upsert Person').item.json.data.id.record_id }], merchant: [{ target_object: 'companies', target_record_id: $('Upsert Merchant (companies)').item.json.data.id.record_id }] } } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+    },
+    {
+      "id": "node-photo",
+      "name": "Upload Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1340, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 6: POST /v2/files (multipart). Streams the webhook's binary photo, linked to the claim record id. NOTE: verify exact /v2/files field names against the current Attio API before going live (file-upload params change more often than record endpoints).",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.attio.com/v2/files",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            { "name": "raw_email", "value": "={{ $json.body.raw_email }}" },
-            { "name": "channel_id", "value": "={{ $json.body.channel_id }}" }
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" },
+            { "parameterType": "formData", "name": "object", "value": "claims" },
+            { "parameterType": "formData", "name": "record_id", "value": "={{ $('Create Claim').item.json.data.id.record_id }}" }
           ]
-        }
+        },
+        "options": { "timeout": 15000 }
       },
-      "name": "Extract (Gemini)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [460, 300]
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
     },
     {
-      "parameters": {
-        "method": "POST",
-        "url": "=http://localhost:8000/claims/{{ $json.id }}/enrich"
-      },
-      "name": "Enrich (Tavily)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [680, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=http://localhost:8000/claims/{{ $json.claim.id }}/decide"
-      },
-      "name": "Decide",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [900, 300]
-    },
-    {
+      "id": "node-if",
+      "name": "Evri only?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1560, 380],
+      "notes": "Phase 1 gate: only Evri claims are processed by the agent. Non-Evri couriers are captured in Attio but skip processing. true -> Process Claim; false -> Respond: captured (non-Evri).",
       "parameters": {
         "conditions": {
-          "string": [
-            { "value1": "={{ $json.status }}", "operation": "notEqual", "value2": "Rejected" }
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-evri",
+              "leftValue": "={{ $('Generate correlation_id').item.json.courier }}",
+              "rightValue": "Evri",
+              "operator": { "type": "string", "operation": "equals" }
+            }
           ]
         }
-      },
-      "name": "Eligible?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 1,
-      "position": [1120, 300]
+      }
     },
     {
-      "parameters": { "method": "POST", "url": "http://localhost:8000/batches/dispatch" },
-      "name": "Generate + Dispatch",
+      "id": "node-process",
+      "name": "Process Claim (FastAPI)",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [1340, 220]
+      "typeVersion": 4.4,
+      "position": [1780, 280],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 7: POST {AGENT_BASE_URL or http://localhost:8000}/claims/{correlation_id}/process. Hands the claim to the FastAPI agent service (extract -> enrich -> decide -> generate -> dispatch). Idempotent on correlation_id.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_BASE_URL || 'http://localhost:8000') }}/claims/{{ $('Generate correlation_id').item.json.correlation_id }}/process",
+        "options": { "timeout": 30000 }
+      }
+    },
+    {
+      "id": "node-respond-ok",
+      "name": "Respond: processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2000, 280],
+      "notes": "Step 8: 200 + claim reference for processed Evri claims.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, correlation_id: $('Generate correlation_id').item.json.correlation_id, claim_record_id: $('Create Claim').item.json.data.id.record_id, status: 'New', message: 'Claim captured and Evri processing started.' } }}",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "node-respond-skip",
+      "name": "Respond: captured (non-Evri)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1780, 480],
+      "notes": "Step 8 (non-Evri branch): 200 + claim reference; processing is Evri-only in Phase 1.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, correlation_id: $('Generate correlation_id').item.json.correlation_id, claim_record_id: $('Create Claim').item.json.data.id.record_id, courier: $('Generate correlation_id').item.json.courier, message: 'Claim captured. Automated processing is Evri-only in Phase 1.' } }}",
+        "options": { "responseCode": 200 }
+      }
     }
   ],
   "connections": {
-    "Webhook: claim-intake": { "main": [[{ "node": "Extract (Gemini)", "type": "main", "index": 0 }]] },
-    "Extract (Gemini)": { "main": [[{ "node": "Enrich (Tavily)", "type": "main", "index": 0 }]] },
-    "Enrich (Tavily)": { "main": [[{ "node": "Decide", "type": "main", "index": 0 }]] },
-    "Decide": { "main": [[{ "node": "Eligible?", "type": "main", "index": 0 }]] },
-    "Eligible?": { "main": [[{ "node": "Generate + Dispatch", "type": "main", "index": 0 }], []] }
-  }
+    "Webhook: claim-intake": { "main": [[{ "node": "Generate correlation_id", "type": "main", "index": 0 }]] },
+    "Generate correlation_id": { "main": [[{ "node": "Upsert Person", "type": "main", "index": 0 }]] },
+    "Upsert Person": { "main": [[{ "node": "Upsert Merchant (companies)", "type": "main", "index": 0 }]] },
+    "Upsert Merchant (companies)": { "main": [[{ "node": "Create Claim", "type": "main", "index": 0 }]] },
+    "Create Claim": { "main": [[{ "node": "Upload Photo", "type": "main", "index": 0 }]] },
+    "Upload Photo": { "main": [[{ "node": "Evri only?", "type": "main", "index": 0 }]] },
+    "Evri only?": { "main": [[{ "node": "Process Claim (FastAPI)", "type": "main", "index": 0 }], [{ "node": "Respond: captured (non-Evri)", "type": "main", "index": 0 }]] },
+    "Process Claim (FastAPI)": { "main": [[{ "node": "Respond: processed", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
 }
