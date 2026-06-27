@@ -7,17 +7,19 @@ Each endpoint is a dumb step; n8n chains them. See docs/Technical Spec.md.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.agent.decide import decide
 from app.agent.enrich import enrich
 from app.agent.extract import extract
+from app.agent.risk import assess_risk
 from app.agent.route import recommend_model
 from app.config import channel_for, load_outcomes
 from app.deps import get_deps
-from app.domain.claim import Claim, Status
+from app.domain.claim import Channel, Claim, ClaimType, Status
 from app.domain.state_machine import transition
 from app.generators.evri_csv import generate_evri_csv
 from app.integrations.dispatch_mock import dispatch
@@ -87,6 +89,139 @@ def decide_claim(claim_id: str) -> dict:
     transition(claim, new_status, reason=claim.status_reason)
     _project(deps, claim)
     return claim.model_dump()
+
+
+class ProcessBody(BaseModel):
+    """Optional claim fields. If omitted, the claim is read from Attio by correlation_id."""
+
+    order_number: str | None = None
+    courier: str | None = None
+    claim_type: str | None = None
+    tracking_number: str | None = None
+    delivery_postcode: str | None = None
+    postcode: str | None = None
+    cost_value: float | None = None
+    parcel_value: int | None = None
+    customer_comment: str | None = None
+    merchant_name: str | None = None
+    channel_name: str | None = None
+
+
+def _build_claim(correlation_id: str, data: dict) -> Claim:
+    tracking = str(data.get("tracking_number") or "T0UNKNOWN").upper()
+    return Claim(
+        id=correlation_id,
+        correlation_id=correlation_id,
+        client_reference=f"REF-{correlation_id[:8].upper()}",
+        channel_id="evri",
+        channel_name=str(data.get("merchant_name") or data.get("channel_name") or "Evri Merchant"),
+        courier=str(data.get("courier") or "Evri"),
+        claim_type=ClaimType(data.get("claim_type") or "Lost"),
+        tracking_number=tracking,
+        order_number=str(data.get("order_number") or "UNKNOWN"),
+        postcode=str(data.get("delivery_postcode") or data.get("postcode") or ""),
+        customer_comment=data.get("customer_comment"),
+        cost_value=float(data.get("cost_value") or 0),
+        parcel_value=int(data.get("parcel_value") or 20),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _channel_for_claim(claim: Claim) -> Channel:
+    """Synthetic channel derived from the claim (ceiling = parcel_value set upstream)."""
+    return Channel(
+        id="evri",
+        name=claim.channel_name,
+        ceiling=claim.parcel_value or 20,
+        damage_allowed=True,
+        barcode_prefix=(claim.tracking_number[:2] or "T0"),
+        provider="direct_mailbox",
+    )
+
+
+@app.post("/claims/{correlation_id}/process")
+def process_claim(correlation_id: str, body: ProcessBody | None = Body(default=None)) -> dict:
+    """Autonomous Evri loop for one claim: enrich -> risk -> decide -> generate -> dispatch.
+
+    Claim data comes from the request body if provided, else is read from Attio by
+    correlation_id. Each status change is projected onto the Attio board.
+    """
+    deps = get_deps()
+
+    data = body.model_dump(exclude_none=True) if body else {}
+    if not data.get("tracking_number"):
+        fetched = deps.attio.get_claim_by_correlation_id(correlation_id)
+        if fetched:
+            data = {**fetched, **data}
+    if not data:
+        raise HTTPException(
+            404,
+            f"No claim data for {correlation_id}. POST the claim fields, or set "
+            "ATTIO_API_KEY so the service can read it from Attio.",
+        )
+
+    courier = str(data.get("courier") or "Evri")
+    if courier.strip().lower() != "evri":
+        raise HTTPException(422, f"Phase 1 processes Evri only; got courier '{courier}'.")
+
+    claim = _build_claim(correlation_id, data)
+    deps.repo.save(claim)
+    steps: list[dict] = []
+
+    # Enrich (Tavily / stub) + deterministic risk score
+    enrichment = enrich(claim.tracking_number, claim.postcode)
+    claim.risk_score, flags = assess_risk(claim, enrichment)
+    claim.fraud_flags = "\n".join(flags)
+    steps.append(
+        {
+            "step": "enrich",
+            "tracking_summary": enrichment.get("tracking_summary"),
+            "risk_score": claim.risk_score,
+            "fraud_flags": flags,
+        }
+    )
+
+    # Decide eligibility: New -> Pending (or Rejected)
+    channel = _channel_for_claim(claim)
+    new_status = decide(claim, channel)
+    transition(claim, new_status, reason=claim.status_reason)
+    _project(deps, claim)
+    steps.append({"step": "decide", "status": claim.status.value, "reason": claim.status_reason})
+
+    if claim.status == Status.REJECTED:
+        return {
+            "correlation_id": correlation_id,
+            "status": claim.status.value,
+            "reason": claim.status_reason,
+            "steps": steps,
+        }
+
+    # Generate byte-exact CSV + mock dispatch: Pending -> Raised
+    csv_bytes = generate_evri_csv([claim])
+    result = dispatch(csv_bytes, claim.channel_name)
+    claim.submission_ref = result["submission_ref"]
+    transition(claim, Status.RAISED, reason=f"Batch {result['file_sha256'][:8]}")
+    _project(deps, claim)
+    steps.append(
+        {
+            "step": "dispatch",
+            "status": claim.status.value,
+            "submission_ref": claim.submission_ref,
+            "file_sha256": result["file_sha256"],
+        }
+    )
+
+    return {
+        "correlation_id": correlation_id,
+        "status": claim.status.value,
+        "submission_ref": claim.submission_ref,
+        "parcel_value": claim.parcel_value,
+        "cost_value": claim.cost_value,
+        "credit_owed": claim.credit_owed(),
+        "risk_score": claim.risk_score,
+        "fraud_flags": flags,
+        "steps": steps,
+    }
 
 
 @app.post("/batches/generate")

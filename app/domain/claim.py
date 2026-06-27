@@ -47,6 +47,8 @@ class Claim(BaseModel):
     status_reason: str | None = None
     submission_ref: str | None = None
     settlement_amount: float | None = None
+    risk_score: float | None = None  # fraud score, set during processing
+    fraud_flags: str | None = None  # newline-separated risk signals
     created_at: str = ""  # ISO timestamp; drives CSV row ordering
 
     def credit_owed(self) -> float:
