@@ -1,78 +1,464 @@
 {
   "name": "outcome-replay",
+  "active": false,
   "nodes": [
     {
-      "id": "n-form",
-      "name": "Outcome: Evri result",
-      "type": "n8n-nodes-base.formTrigger",
-      "typeVersion": 2.1,
-      "position": [240, 300],
-      "webhookId": "outcome-replay",
-      "notes": "Ops-facing form to record the 28-day Evri outcome for a claim. Drives the claim Raised -> Accepted/Rejected/DOR on the Attio board.",
       "parameters": {
-        "path": "outcome-replay",
-        "formTitle": "Enter Evri Outcome",
-        "formDescription": "Record the 28-day Evri outcome for a claim.",
-        "responseMode": "responseNode",
-        "formFields": {
-          "values": [
-            { "fieldLabel": "Tracking / Barcode", "fieldType": "text", "requiredField": true, "placeholder": "e.g. T0047A0709000856" },
-            { "fieldLabel": "Evri outcome code", "fieldType": "text", "requiredField": true, "placeholder": "Accepted (DA1) | SP1 | Rejected (OOT)" },
-            { "fieldLabel": "Settlement amount", "fieldType": "number", "placeholder": "optional; defaults to ceiling on Accept" }
+        "jsCode": "const item = $input.first();\nconst inp = item.json || {};\nconst b = inp.body || inp;\n\nfunction pick() {\n  for (let i = 0; i < arguments.length; i++) {\n    const k = arguments[i];\n    if (b[k] !== undefined && b[k] !== null && b[k] !== '') return b[k];\n  }\n  return '';\n}\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Single business -> one fixed Evri claim ceiling (the cap submitted to Evri).\n// Client credit = min(cost_value, CEILING); parcel_value submitted = CEILING.\nconst CEILING = 25;\n\n// Map the n8n Form fields (keys are the field labels) to normalized slugs.\nconst email = String(pick('customer email address', 'email')).trim().toLowerCase();\nlet name = String(pick('name', 'customer_name', 'full name')).trim();\nif (!name && email) name = email.split('@')[0];\nconst phone = String(pick('phone number', 'phone', 'phone_number')).trim();\nconst order_number = String(pick('Order Number', 'order_number')).trim();\nconst courier = String(pick('Courier', 'courier') || 'Evri').trim();\nconst claim_raw = String(pick('Claim for Loss or Damage', 'claim_type') || 'Lost');\nconst claim_type = /damage/i.test(claim_raw) ? 'Damage' : 'Lost'; // form 'Loss' -> Attio 'Lost'\nconst parcel_count = Number(pick('Number of Parcel Claim', 'parcel_count') || 1);\nconst tracking_number = String(pick('Tracking Number 1', 'tracking_number')).trim();\nconst additional_tracking = String(pick('More Tracking Number if any', 'additional_tracking')).trim();\nconst delivery_postcode = String(pick('Delivery Destination Postcode', 'delivery_postcode', 'postcode')).trim();\nconst customer_comment = String(pick('What is the reason for your claim?', 'customer_comment', 'comment')).trim();\nconst cost_value = Number(pick('Cost Value', 'cost_value') || 0);\nconst parcel_value = CEILING;\n\nconst out = { json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment\n} };\n\n// Normalize whatever file the form uploaded to binary 'data' for the photo node.\nconst inb = item.binary || {};\nconst bk = Object.keys(inb)[0];\nif (bk) out.binary = { data: inb[bk] };\nreturn [out];"
+      },
+      "id": "d2bd2835-43a8-47f2-b6e3-bc27eff62c28",
+      "name": "Generate correlation_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1264, 336],
+      "notes": "Step 2: generate correlation_id (UUID) BEFORE any Attio call so retries are idempotent. Normalizes the form fields (keys are the field labels) and sets parcel_value = ceiling submitted to Evri, kept separate from cost_value (customer-stated)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-evri",
+              "leftValue": "={{ $('Generate correlation_id').item.json.courier }}",
+              "rightValue": "Evri",
+              "operator": { "type": "string", "operation": "equals" }
+            }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "90b878da-0e33-41f3-bffb-4138dcee0bb5",
+      "name": "Evri only?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1488, 336],
+      "notes": "Phase 1 gate, BEFORE any Attio write. Only Evri claims proceed. true -> Upsert Person; false -> Respond: rejected (non-Evri)."
     },
     {
-      "id": "n-code",
-      "name": "Build outcome payload",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [460, 300],
-      "notes": "Maps the form labels to the /outcomes/ingest body {barcode, claim_status, settlement_amount?}.",
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const b = $input.first().json;\nfunction pick(){for(let i=0;i<arguments.length;i++){const k=arguments[i];if(b[k]!==undefined&&b[k]!==null&&b[k]!=='')return b[k];}return '';}\nconst barcode = String(pick('Tracking / Barcode','barcode','tracking_number')).trim();\nconst claim_status = String(pick('Evri outcome code','claim_status')).trim();\nconst settle = pick('Settlement amount','settlement_amount');\nconst out = { barcode, claim_status };\nif (settle !== '' && settle !== undefined && settle !== null) out.settlement_amount = Number(settle);\nreturn [{ json: out }];"
-      }
-    },
-    {
-      "id": "n-http",
-      "name": "POST /outcomes/ingest",
+        "method": "PUT",
+        "url": "https://api.attio.com/v2/objects/people/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [ { "name": "matching_attribute", "value": "email_addresses" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { data: { values: { name: $('Generate correlation_id').item.json.name, email_addresses: [$('Generate correlation_id').item.json.email] } } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "c10f6702-b275-4e00-82fc-c8359ce0ec22",
+      "name": "Upsert Person",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [680, 300],
+      "position": [1696, 224],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
-      "notes": "Calls the FastAPI agent. Set AGENT_BASE_URL (or edit the URL) to the public agent URL (tunnel/Render).",
+      "credentials": { "httpHeaderAuth": { "id": "wUtk3YU0CncL28B6", "name": "Attio API (Header Auth)" } },
+      "notes": "Step 3 (Evri only): PUT /v2/objects/people/records, matching on email_addresses. Returns the person record id at data.id.record_id."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.attio.com/v2/objects/claims/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { data: { values: { correlation_id: $('Generate correlation_id').item.json.correlation_id, order_number: $('Generate correlation_id').item.json.order_number, courier: $('Generate correlation_id').item.json.courier, tracking_number: $('Generate correlation_id').item.json.tracking_number, additional_tracking: $('Generate correlation_id').item.json.additional_tracking, claim_type: $('Generate correlation_id').item.json.claim_type, parcel_count: $('Generate correlation_id').item.json.parcel_count, delivery_postcode: $('Generate correlation_id').item.json.delivery_postcode, phone_number: $('Generate correlation_id').item.json.phone, customer_comment: $('Generate correlation_id').item.json.customer_comment, status: 'New', cost_value: $('Generate correlation_id').item.json.cost_value, parcel_value: $('Generate correlation_id').item.json.parcel_value, customer: [{ target_object: 'people', target_record_id: $('Upsert Person').item.json.data.id.record_id }] } } } }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "6b166527-56b8-4334-aca3-37e4df629098",
+      "name": "Create Claim",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2000, 224],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": { "httpHeaderAuth": { "id": "wUtk3YU0CncL28B6", "name": "Attio API (Header Auth)" } },
+      "notes": "Step 5 (Evri only): POST /v2/objects/claims/records. status New, courier Evri. parcel_value = ceiling submitted to Evri; cost_value = customer-stated. Returns claim record id at data.id.record_id."
+    },
+    {
+      "parameters": {
+        "jsCode": "const bin = $('Generate correlation_id').first().binary || {};\nreturn [{ json: $json, binary: bin }];"
+      },
+      "id": "5c587ecc-3247-4158-90cf-6fc0c973d5dd",
+      "name": "Attach photo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 224],
+      "notes": "Re-injects the form's uploaded file (binary 'data') that the HTTP nodes dropped, so Upload Photo can attach it."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.attio.com/v2/files",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" },
+            { "name": "object", "value": "claims" },
+            { "name": "record_id", "value": "={{ $('Create Claim').item.json.data.id.record_id }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "id": "b567ef6a-bcfa-4b5c-9a70-d0ad7373c9bb",
+      "name": "Upload Photo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2304, 224],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": { "httpHeaderAuth": { "id": "wUtk3YU0CncL28B6", "name": "Attio API (Header Auth)" } },
+      "onError": "continueRegularOutput",
+      "notes": "Step 6 (Evri only): POST /v2/files (multipart). Photo is OPTIONAL — onError continues so a claim with no photo still flows through."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const g = $('Generate correlation_id').item.json;\nlet jsonData = $json ?? {};\nconst recId = $('Create Claim').item.json?.data?.id?.record_id ?? '';\nconst fileId = jsonData.data?.id?.file_id ?? jsonData.data?.file_id ?? jsonData.data?.id ?? '';\nconst fileUrl = jsonData.data?.url ?? jsonData.data?.download_url ?? jsonData.data?.values?.url ?? '';\nconst photo_url = fileUrl || (fileId ? ('attio-file:' + fileId) : '');\nconst claim = {\n  correlation_id: g.correlation_id, order_number: g.order_number, courier: g.courier,\n  claim_type: g.claim_type, parcel_value: g.parcel_value, cost_value: g.cost_value,\n  delivery_postcode: g.delivery_postcode, tracking_number: g.tracking_number,\n  additional_tracking: g.additional_tracking, customer_name: g.name, customer_email: g.email,\n  customer_comment: g.customer_comment, photo_url, attio_claim_record_id: recId,\n};\nconst nowIso = new Date().toISOString();\nconst doc = { ...claim, state:'VALIDATING', created_at:nowIso, updated_at:nowIso, verdict:null, decision:null, attio_status:null, error:null, human_review:null };\nfunction toFV(v){ if(v===null||v===undefined)return{nullValue:null}; if(typeof v==='boolean')return{booleanValue:v}; if(typeof v==='number')return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v}; if(typeof v==='string')return{stringValue:v}; if(Array.isArray(v))return{arrayValue:{values:v.map(toFV)}}; if(typeof v==='object')return{mapValue:{fields:toFF(v)}}; return{stringValue:String(v)}; }\nfunction toFF(o){ const fields={}; for(const [k,val] of Object.entries(o)) fields[k]=toFV(val); return fields; }\nreturn { json: { claim, doc, firestoreFields: toFF(doc) } };"
+      },
+      "id": "77ce1b30-437e-43be-a678-ebeadf61ed22",
+      "name": "Build VALIDATING doc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2496, 224],
+      "notes": "Builds the Firestore claim doc (state VALIDATING) from the normalized form fields + Attio claim record id + uploaded photo URL."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://firestore.googleapis.com/v1/projects/{{ $env.FIREBASE_PROJECT_ID }}/databases/(default)/documents/claims/{{ $json.doc.correlation_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: $json.firestoreFields }) }}",
+        "options": {}
+      },
+      "id": "4e51f964-bbe3-414b-bb58-dbb8f6ecb905",
+      "name": "Firestore: write VALIDATING",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2688, 224],
+      "credentials": { "httpHeaderAuth": { "id": "hZ3HrVWNG9aJfZTa", "name": "Firebase Header" } },
+      "onError": "continueRegularOutput",
+      "notes": "Upsert the claim doc in Firestore with state VALIDATING. Requires env FIREBASE_PROJECT_ID and a Firebase auth header credential (or FIREBASE_API_KEY)."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, correlation_id: $('Generate correlation_id').item.json.correlation_id, claim_record_id: $('Create Claim').item.json.data.id.record_id, status: 'New', message: 'Claim captured; validation in progress.' } }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "59bdb339-a316-460b-bd7f-66cee3397689",
+      "name": "Respond: processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2816, -144],
+      "notes": "Early ack: 200 + claim reference right after the VALIDATING write, so the form returns fast while the Gemini validation runs asynchronously."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, correlation_id: $('Generate correlation_id').item.json.correlation_id, courier: $('Generate correlation_id').item.json.courier, message: 'Rejected: only Evri claims are supported in Phase 1.' } }}",
+        "options": { "responseCode": 422 }
+      },
+      "id": "55f4d44b-5ad2-4c36-8498-ede500d75ba7",
+      "name": "Respond: rejected (non-Evri)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1696, 464],
+      "notes": "Phase 1: non-Evri couriers are rejected up front. No Attio records are created. Returns 422 with the reason."
+    },
+    {
+      "parameters": {
+        "path": "claim-intake",
+        "formTitle": "Courier Claim Intake",
+        "formDescription": "Submit a courier claim. Evri claims are processed automatically.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "customer email address", "fieldType": "email", "placeholder": "you@example.com", "requiredField": true },
+            { "fieldLabel": "phone number", "placeholder": "+44 7700 900000", "requiredField": true },
+            { "fieldLabel": "Order Number", "placeholder": "e.g. ORD-10231", "requiredField": true },
+            { "fieldLabel": "Courier", "fieldType": "dropdown", "fieldOptions": { "values": [ { "option": "Evri" }, { "option": "Royal Mail" }, { "option": "DPD" }, { "option": "Yodel" } ] }, "requiredField": true },
+            { "fieldLabel": "Claim for Loss or Damage", "fieldType": "dropdown", "fieldOptions": { "values": [ { "option": "Loss" }, { "option": "Damage" } ] }, "requiredField": true },
+            { "fieldLabel": "Number of Parcel Claim", "fieldType": "number", "placeholder": "1", "requiredField": true },
+            { "fieldLabel": "Tracking Number 1", "placeholder": "e.g. H00ABC123456", "requiredField": true },
+            { "fieldLabel": "More Tracking Number if any", "fieldType": "textarea", "placeholder": "Additional tracking numbers, comma-separated" },
+            { "fieldLabel": "Delivery Destination Postcode", "placeholder": "e.g. EC1A 1BB", "requiredField": true },
+            { "fieldLabel": "Photographic Evidence supporting Claim", "fieldType": "file", "multipleFiles": false, "acceptFileTypes": ".jpg,.jpeg,.png,.pdf" },
+            { "fieldLabel": "What is the reason for your claim?", "fieldType": "textarea", "placeholder": "Describe what happened", "requiredField": true },
+            { "fieldLabel": "Cost Value", "fieldType": "number", "placeholder": "Cost of the goods, e.g. 22", "requiredField": true }
+          ]
+        },
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ae301dec-31ad-4294-ace0-77c7087b40c6",
+      "name": "Form: claim-intake",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.1,
+      "position": [1056, 336],
+      "webhookId": "36d3c8be-5487-4c64-909a-5255b8514a8e",
+      "notes": "Public intake form (responseNode mode). Fields arrive keyed by their labels; 'Generate correlation_id' maps them. Photo is optional."
+    },
+    {
+      "parameters": {
+        "path": "3ec63110-7ebb-439a-ac87-d42f3ddb6879",
+        "formTitle": "Enter Evri Outcome",
+        "formDescription": "Record the 28-day Evri outcome for a claim.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "Tracking / Barcode", "placeholder": "e.g. T0047A0709000856", "requiredField": true },
+            { "fieldLabel": "Evri outcome code", "placeholder": "Accepted (DA1) | SP1 | Rejected (OOT)", "requiredField": true },
+            { "fieldLabel": "Settlement amount", "fieldType": "number", "placeholder": "optional; defaults to ceiling on Accept" }
+          ]
+        },
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "549590df-b53e-4906-b360-08154519867e",
+      "name": "Outcome: Evri result",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.1,
+      "position": [1056, 752],
+      "webhookId": "3ec63110-7ebb-439a-ac87-d42f3ddb6879",
+      "notes": "Ops-facing form to record the 28-day Evri outcome. Drives the claim Raised -> Accepted/Rejected/DOR on the Attio board."
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $input.first().json;\nfunction pick(){for(let i=0;i<arguments.length;i++){const k=arguments[i];if(b[k]!==undefined&&b[k]!==null&&b[k]!=='')return b[k];}return '';}\nconst barcode = String(pick('Tracking / Barcode','barcode','tracking_number')).trim();\nconst claim_status = String(pick('Evri outcome code','claim_status')).trim();\nconst settle = pick('Settlement amount','settlement_amount');\nconst out = { barcode, claim_status };\nif (settle !== '' && settle !== undefined && settle !== null) out.settlement_amount = Number(settle);\nreturn [{ json: out }];"
+      },
+      "id": "4cc63cf8-1073-4d5b-b792-5fa1cd9dcf86",
+      "name": "Build outcome payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1296, 752],
+      "notes": "Maps the form labels to the /outcomes/ingest body {barcode, claim_status, settlement_amount?}."
+    },
+    {
       "parameters": {
         "method": "POST",
         "url": "={{ ($env.AGENT_BASE_URL || 'http://localhost:8000') }}/outcomes/ingest",
         "sendBody": true,
-        "contentType": "json",
         "specifyBody": "json",
         "jsonBody": "={{ $json }}",
         "options": { "timeout": 30000 }
-      }
+      },
+      "id": "68016227-9d6d-477e-9b1b-fdbcc86fc51d",
+      "name": "POST /outcomes/ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1536, 752],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Calls the FastAPI agent. Set AGENT_BASE_URL (or edit the URL) to the public agent URL (tunnel/Render)."
     },
     {
-      "id": "n-resp",
-      "name": "Respond",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.5,
-      "position": [900, 300],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ $json }}",
         "options": { "responseCode": 200 }
-      }
+      },
+      "id": "0d10c554-c4e9-4353-bd04-783bcf8a3c10",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1776, 752]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const g = $('Generate correlation_id').first();\nconst src = $('Build VALIDATING doc').item.json;\nconst bin = (g.binary && g.binary.data) ? { data: g.binary.data } : {};\nreturn { json: { claim: src.claim, claimJson: JSON.stringify(src.claim, null, 2) }, binary: bin };"
+      },
+      "id": "53279b0a-6e8f-444f-ab56-3c854e7b1db6",
+      "name": "Prep agent input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2992, -144],
+      "notes": "Carries the claim + the photo binary ('data', optional) forward so the AI Agent can pass the image to the multimodal model."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Validate this parcel-delivery claim. A supporting photo may be attached as an image (optional). If no photo is provided, judge from the claim metadata and customer_comment alone and lower confidence accordingly.\n\nCLAIM (JSON):\n{{ $json.claimJson }}\n\nCross-check the photo against the customer_comment and the claim metadata, assess damage severity/types, authenticity (screenshot/reused), and consistency. You are an ADVISOR ONLY — a deterministic system makes the final accept/reject/escalate decision, so report honestly and do not inflate confidence. Respond with ONLY the verdict object that conforms to the required output schema.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a parcel-claims validation analyst for a UK courier (Evri). Judge whether a claim is GENUINE, INCONSISTENT, INSUFFICIENT_EVIDENCE, or SUSPECTED_FRAUD by cross-checking the attached photo against the claim. You are advisory only; the deterministic system owns the final decision.",
+          "passthroughBinaryImages": true
+        }
+      },
+      "id": "a5ce89fe-2a33-4d3d-967b-4efe0f7eb00c",
+      "name": "AI Agent: validate claim",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [3216, -144],
+      "onError": "continueErrorOutput",
+      "notes": "Eligibility/validation agent. Cross-checks the photo against the claim and returns a schema-locked verdict (contract/verdict.schema.json). Advisory only — the deterministic Fuse + decide owns the final decision."
+    },
+    {
+      "parameters": { "modelName": "models/gemini-2.5-flash", "options": {} },
+      "id": "37804315-73a9-4734-babd-992335f5c084",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [3200, 96],
+      "credentials": { "googlePalmApi": { "id": "a2MT29ACMe3CxvXj", "name": "Gemini API" } }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\"type\":\"object\",\"properties\":{\"verdict\":{\"type\":\"string\",\"enum\":[\"GENUINE\",\"INCONSISTENT\",\"INSUFFICIENT_EVIDENCE\",\"SUSPECTED_FRAUD\"]},\"confidence\":{\"type\":\"number\"},\"claim_type\":{\"type\":\"string\",\"enum\":[\"DAMAGE\",\"LOSS\",\"SHORTAGE\",\"NON_DELIVERY\"]},\"damage_assessment\":{\"type\":\"object\",\"properties\":{\"severity\":{\"type\":\"string\",\"enum\":[\"NONE\",\"MINOR\",\"MODERATE\",\"SEVERE\",\"TOTAL\"]},\"damage_types\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"affected_units\":{\"type\":\"integer\"}},\"required\":[\"severity\",\"damage_types\",\"affected_units\"]},\"cross_checks\":{\"type\":\"object\",\"properties\":{\"matches_comment\":{\"type\":\"boolean\"},\"photo_shows_claimed_damage\":{\"type\":\"boolean\"},\"sku_or_label_legible\":{\"type\":\"boolean\"}},\"required\":[\"matches_comment\",\"photo_shows_claimed_damage\",\"sku_or_label_legible\"]},\"authenticity\":{\"type\":\"object\",\"properties\":{\"looks_screenshot_or_reused\":{\"type\":\"boolean\"},\"notes\":{\"type\":\"string\"}},\"required\":[\"looks_screenshot_or_reused\",\"notes\"]},\"inconsistencies\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"acceptance_likelihood\":{\"type\":\"number\"},\"recommended_action\":{\"type\":\"string\",\"enum\":[\"AUTO_PROCEED\",\"ESCALATE_HUMAN\",\"REJECT\"]},\"rationale\":{\"type\":\"string\"},\"evidence_citations\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"verdict\",\"confidence\",\"claim_type\",\"damage_assessment\",\"cross_checks\",\"authenticity\",\"inconsistencies\",\"acceptance_likelihood\",\"recommended_action\",\"rationale\",\"evidence_citations\"]}"
+      },
+      "id": "b38167d2-26cb-4113-8f48-79e24d590a92",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [3408, 96],
+      "notes": "Enforces the verdict contract (contract/verdict.schema.json) on the agent output."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const geminiResponse = $json.output ?? $json;\nconst prevDoc = $('Build VALIDATING doc').item.json.doc;\nconst claim = $('Build VALIDATING doc').item.json.claim;\nconst VERDICT_LABELS=['GENUINE','INCONSISTENT','INSUFFICIENT_EVIDENCE','SUSPECTED_FRAUD'];\nconst CLAIM_TYPES=['DAMAGE','LOSS','SHORTAGE','NON_DELIVERY'];\nconst SEVERITIES=['NONE','MINOR','MODERATE','SEVERE','TOTAL'];\nconst ACTIONS=['AUTO_PROCEED','ESCALATE_HUMAN','REJECT'];\nconst isRec=(v)=>typeof v==='object'&&v!==null&&!Array.isArray(v);\nconst clamp01=(n)=>{const x=(typeof n==='number'&&isFinite(n))?n:0;return Math.max(0,Math.min(1,x));};\nconst asEnum=(v,a,fb)=>(typeof v==='string'&&a.includes(v))?v:fb;\nconst asArr=(v)=>Array.isArray(v)?v.filter((x)=>typeof x==='string'):[];\nconst asStr=(v,fb='')=>typeof v==='string'?v:fb;\nconst asBool=(v,fb=false)=>typeof v==='boolean'?v:fb;\nconst asInt=(v,fb=0)=>(typeof v==='number'&&isFinite(v))?Math.trunc(v):fb;\nfunction asObject(input){ if(isRec(input))return input; if(typeof input==='string'){ let t=input.trim(); const m=/^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/i.exec(t); if(m)t=m[1].trim(); return JSON.parse(t);} throw new Error('parseVerdict: input must be object or JSON string'); }\nfunction unwrap(obj){ if(!('candidates' in obj))return obj; const cands=obj.candidates; if(!Array.isArray(cands)||cands.length===0)throw new Error('parseVerdict: no candidates'); const first=cands[0]; const parts=first?.content?.parts; if(!Array.isArray(parts)||parts.length===0)throw new Error('parseVerdict: no content parts'); const text=parts.map((p)=>(p&&typeof p.text==='string')?p.text:'').join('').trim(); if(!text)throw new Error('parseVerdict: empty text'); return asObject(text); }\nfunction parseVerdict(resp){ if(resp===null||resp===undefined)throw new Error('parseVerdict: null input'); const raw=unwrap(asObject(resp)); if(typeof raw.verdict!=='string'||!VERDICT_LABELS.includes(raw.verdict))throw new Error('parseVerdict: missing/invalid verdict field'); const da=isRec(raw.damage_assessment)?raw.damage_assessment:{}; const cc=isRec(raw.cross_checks)?raw.cross_checks:{}; const au=isRec(raw.authenticity)?raw.authenticity:{}; return { verdict:raw.verdict, confidence:clamp01(raw.confidence), claim_type:asEnum(raw.claim_type,CLAIM_TYPES,'DAMAGE'), damage_assessment:{severity:asEnum(da.severity,SEVERITIES,'NONE'),damage_types:asArr(da.damage_types),affected_units:asInt(da.affected_units,0)}, cross_checks:{matches_comment:asBool(cc.matches_comment),photo_shows_claimed_damage:asBool(cc.photo_shows_claimed_damage),sku_or_label_legible:asBool(cc.sku_or_label_legible)}, authenticity:{looks_screenshot_or_reused:asBool(au.looks_screenshot_or_reused),notes:asStr(au.notes)}, inconsistencies:asArr(raw.inconsistencies), acceptance_likelihood:clamp01(raw.acceptance_likelihood), recommended_action:asEnum(raw.recommended_action,ACTIONS,'ESCALATE_HUMAN'), rationale:asStr(raw.rationale), evidence_citations:asArr(raw.evidence_citations) }; }\nconst PROCEED_CONFIDENCE=0.85, DEFAULT_HIGH_VALUE_THRESHOLD=100;\nconst gates={ within_window:true, claimant_ok:true, value_within_ceiling:true, photo_present:!!claim.photo_url };\nfunction fuseDecision(verdict,gates,opts){ opts=opts||{}; const allPass=gates.within_window&&gates.claimant_ok&&gates.value_within_ceiling; if(!allPass)return{decision:'AUTO_REJECT',attio_status:'Rejected'}; const hv=(typeof opts.highValueThreshold==='number')?opts.highValueThreshold:DEFAULT_HIGH_VALUE_THRESHOLD; const isHigh=(typeof opts.parcelValue==='number')&&opts.parcelValue>hv; const authFlag=verdict.authenticity&&verdict.authenticity.looks_screenshot_or_reused===true; const conf=(typeof verdict.confidence==='number')?verdict.confidence:0; const canProceed=verdict.verdict==='GENUINE'&&conf>=PROCEED_CONFIDENCE&&!authFlag&&!isHigh; if(canProceed)return{decision:'AUTO_PROCEED',attio_status:'Raised'}; return{decision:'ESCALATE_HUMAN',attio_status:'OnHold'}; }\nfunction toFV(v){ if(v===null||v===undefined)return{nullValue:null}; if(typeof v==='boolean')return{booleanValue:v}; if(typeof v==='number')return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v}; if(typeof v==='string')return{stringValue:v}; if(Array.isArray(v))return{arrayValue:{values:v.map(toFV)}}; if(typeof v==='object')return{mapValue:{fields:toFF(v)}}; return{stringValue:String(v)}; }\nfunction toFF(o){ const fields={}; for(const [k,val] of Object.entries(o)) fields[k]=toFV(val); return fields; }\nconst nowIso=new Date().toISOString();\nlet verdict, decision, errorMessage=null;\ntry { verdict=parseVerdict(geminiResponse); decision=fuseDecision(verdict,gates,{parcelValue:claim.parcel_value}); }\ncatch(e){ errorMessage='Gemini/parse failure: '+(e&&e.message?e.message:String(e)); }\nif (errorMessage) {\n  const errDoc={ ...prevDoc, state:'ERROR', updated_at:nowIso, verdict:null, decision:null, attio_status:null, error:errorMessage, human_review:prevDoc.human_review??null };\n  return { json: { ok:false, error:errorMessage, doc:errDoc, firestoreFields:toFF(errDoc), correlation_id:claim.correlation_id } };\n}\nconst doc={ ...prevDoc, state:'VALIDATED', updated_at:nowIso, verdict, decision:decision.decision, attio_status:decision.attio_status, error:null, human_review:prevDoc.human_review??null };\nreturn { json: { ok:true, verdict, decision, attio_status:decision.attio_status, attio_claim_record_id:claim.attio_claim_record_id, correlation_id:claim.correlation_id, doc, firestoreFields:toFF(doc), attioStatusBody:{ data:{ values:{ status:decision.attio_status } } } } };"
+      },
+      "id": "df5f2c71-8498-422a-b105-fb1babb2a526",
+      "name": "Fuse + decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3744, -160],
+      "notes": "Deterministic gates + fuseDecision. Gemini is advisory; this owns AUTO_PROCEED/ESCALATE_HUMAN/AUTO_REJECT -> Attio status Raised/OnHold/Rejected. Photo is NOT a hard gate (optional)."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.attio.com/v2/objects/claims/records/{{ $json.attio_claim_record_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.attioStatusBody) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "096d23a7-e937-4e3b-8376-414709853ce9",
+      "name": "Attio: update status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [4032, -160],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": { "httpHeaderAuth": { "id": "wUtk3YU0CncL28B6", "name": "Attio API (Header Auth)" } },
+      "onError": "continueRegularOutput",
+      "notes": "PATCH the claim record to the fused status (Raised / OnHold / Rejected)."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://firestore.googleapis.com/v1/projects/{{ $env.FIREBASE_PROJECT_ID }}/databases/(default)/documents/claims/{{ $('Fuse + decide').item.json.correlation_id }}",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [ { "name": "key", "value": "={{ $env.FIREBASE_API_KEY }}" } ] },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: $('Fuse + decide').item.json.firestoreFields }) }}",
+        "options": {}
+      },
+      "id": "0fe5bda2-b6c4-4fcc-99c4-4ea0127553e5",
+      "name": "Firestore: write VALIDATED",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [4288, -160],
+      "onError": "continueRegularOutput",
+      "notes": "Upsert the claim doc with state VALIDATED + verdict + decision."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_BASE_URL || 'http://localhost:8000') }}/claims/{{ $('Generate correlation_id').item.json.correlation_id }}/process",
+        "options": { "timeout": 30000 }
+      },
+      "id": "3fba67ce-ab56-4f7f-b422-6afdc3ab6422",
+      "name": "Process Claim (FastAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [4560, -160],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Step 7 (Evri only): POST {AGENT_BASE_URL}/claims/{correlation_id}/process. Hands the claim to the FastAPI agent (generate byte-exact Evri CSV -> mock dispatch). Idempotent on correlation_id."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const src = $('Build VALIDATING doc').item.json;\nconst prevDoc = src ? src.doc : null;\nconst nowIso = new Date().toISOString();\nconst errMsg = ($json && $json.error && ($json.error.message || $json.error)) ? String($json.error.message || $json.error)\n  : (($json && $json.message) ? String($json.message) : 'Validation step failed (see n8n execution log).');\nconst base = prevDoc || { correlation_id: src?.claim?.correlation_id ?? 'unknown', state:'VALIDATING', created_at:nowIso, updated_at:nowIso, verdict:null, decision:null, attio_status:null, error:null, human_review:null };\nconst doc = { ...base, state:'ERROR', updated_at:nowIso, verdict:null, decision:null, attio_status:null, error:errMsg, human_review:base.human_review??null };\nfunction toFV(v){ if(v===null||v===undefined)return{nullValue:null}; if(typeof v==='boolean')return{booleanValue:v}; if(typeof v==='number')return Number.isInteger(v)?{integerValue:String(v)}:{doubleValue:v}; if(typeof v==='string')return{stringValue:v}; if(Array.isArray(v))return{arrayValue:{values:v.map(toFV)}}; if(typeof v==='object')return{mapValue:{fields:toFF(v)}}; return{stringValue:String(v)}; }\nfunction toFF(o){ const fields={}; for(const [k,val] of Object.entries(o)) fields[k]=toFV(val); return fields; }\nreturn { json: { doc, firestoreFields: toFF(doc), correlation_id: base.correlation_id } };"
+      },
+      "id": "ed713d9f-0307-4282-a505-88e9d8886865",
+      "name": "Build ERROR doc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3728, 112],
+      "notes": "Builds an ERROR Firestore doc when the agent errors out."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://firestore.googleapis.com/v1/projects/{{ $env.FIREBASE_PROJECT_ID }}/databases/(default)/documents/claims/{{ $json.correlation_id }}",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [ { "name": "key", "value": "={{ $env.FIREBASE_API_KEY }}" } ] },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: $json.firestoreFields }) }}",
+        "options": {}
+      },
+      "id": "a338d68a-cb7f-4115-aebf-6226d8c9b469",
+      "name": "Firestore: write ERROR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3952, 128],
+      "onError": "continueRegularOutput",
+      "notes": "Upsert the claim doc with state ERROR."
     }
   ],
   "connections": {
-    "Outcome: Evri result": { "main": [[{ "node": "Build outcome payload", "type": "main", "index": 0 }]] },
-    "Build outcome payload": { "main": [[{ "node": "POST /outcomes/ingest", "type": "main", "index": 0 }]] },
-    "POST /outcomes/ingest": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+    "Generate correlation_id": { "main": [ [ { "node": "Evri only?", "type": "main", "index": 0 } ] ] },
+    "Evri only?": { "main": [ [ { "node": "Upsert Person", "type": "main", "index": 0 } ], [ { "node": "Respond: rejected (non-Evri)", "type": "main", "index": 0 } ] ] },
+    "Upsert Person": { "main": [ [ { "node": "Create Claim", "type": "main", "index": 0 } ] ] },
+    "Create Claim": { "main": [ [ { "node": "Attach photo", "type": "main", "index": 0 } ] ] },
+    "Form: claim-intake": { "main": [ [ { "node": "Generate correlation_id", "type": "main", "index": 0 } ] ] },
+    "Attach photo": { "main": [ [ { "node": "Upload Photo", "type": "main", "index": 0 } ] ] },
+    "Outcome: Evri result": { "main": [ [ { "node": "Build outcome payload", "type": "main", "index": 0 } ] ] },
+    "Build outcome payload": { "main": [ [ { "node": "POST /outcomes/ingest", "type": "main", "index": 0 } ] ] },
+    "POST /outcomes/ingest": { "main": [ [ { "node": "Respond", "type": "main", "index": 0 } ] ] },
+    "Upload Photo": { "main": [ [ { "node": "Build VALIDATING doc", "type": "main", "index": 0 } ] ] },
+    "Build VALIDATING doc": { "main": [ [ { "node": "Firestore: write VALIDATING", "type": "main", "index": 0 } ] ] },
+    "Firestore: write VALIDATING": { "main": [ [ { "node": "Respond: processed", "type": "main", "index": 0 } ] ] },
+    "Respond: processed": { "main": [ [ { "node": "Prep agent input", "type": "main", "index": 0 } ] ] },
+    "Prep agent input": { "main": [ [ { "node": "AI Agent: validate claim", "type": "main", "index": 0 } ] ] },
+    "AI Agent: validate claim": { "main": [ [ { "node": "Fuse + decide", "type": "main", "index": 0 } ], [ { "node": "Build ERROR doc", "type": "main", "index": 0 } ] ] },
+    "Google Gemini Chat Model": { "ai_languageModel": [ [ { "node": "AI Agent: validate claim", "type": "ai_languageModel", "index": 0 } ] ] },
+    "Structured Output Parser": { "ai_outputParser": [ [ { "node": "AI Agent: validate claim", "type": "ai_outputParser", "index": 0 } ] ] },
+    "Fuse + decide": { "main": [ [ { "node": "Attio: update status", "type": "main", "index": 0 } ] ] },
+    "Attio: update status": { "main": [ [ { "node": "Firestore: write VALIDATED", "type": "main", "index": 0 } ] ] },
+    "Firestore: write VALIDATED": { "main": [ [ { "node": "Process Claim (FastAPI)", "type": "main", "index": 0 } ] ] },
+    "Build ERROR doc": { "main": [ [ { "node": "Firestore: write ERROR", "type": "main", "index": 0 } ] ] }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": { "executionOrder": "v1", "binaryMode": "separate" },
+  "pinData": {}
 }
