@@ -1,0 +1,11 @@
+dor_codes: [SP1, SP3, SP4, P01]
+accept_codes: [DA1]
+reject_reasons:
+  OOT: Out of time (past 28-day window)
+  DUP: Duplicate
+  DA2: Damage not eligible
+  NC1: Anomalous — investigation required
+  NT2: Anomalous — investigation required
+  LIN1: Tracking-link issue
+  LIN4: Tracking-link issue
+investigation_codes: [NC1, NT2]

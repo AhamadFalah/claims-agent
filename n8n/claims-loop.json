@@ -1,0 +1,76 @@
+{
+  "name": "claims-loop",
+  "nodes": [
+    {
+      "parameters": { "httpMethod": "POST", "path": "claim-intake" },
+      "name": "Webhook: claim-intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/claims/extract",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "raw_email", "value": "={{ $json.body.raw_email }}" },
+            { "name": "channel_id", "value": "={{ $json.body.channel_id }}" }
+          ]
+        }
+      },
+      "name": "Extract (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:8000/claims/{{ $json.id }}/enrich"
+      },
+      "name": "Enrich (Tavily)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:8000/claims/{{ $json.claim.id }}/decide"
+      },
+      "name": "Decide",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{ $json.status }}", "operation": "notEqual", "value2": "Rejected" }
+          ]
+        }
+      },
+      "name": "Eligible?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": { "method": "POST", "url": "http://localhost:8000/batches/dispatch" },
+      "name": "Generate + Dispatch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 220]
+    }
+  ],
+  "connections": {
+    "Webhook: claim-intake": { "main": [[{ "node": "Extract (Gemini)", "type": "main", "index": 0 }]] },
+    "Extract (Gemini)": { "main": [[{ "node": "Enrich (Tavily)", "type": "main", "index": 0 }]] },
+    "Enrich (Tavily)": { "main": [[{ "node": "Decide", "type": "main", "index": 0 }]] },
+    "Decide": { "main": [[{ "node": "Eligible?", "type": "main", "index": 0 }]] },
+    "Eligible?": { "main": [[{ "node": "Generate + Dispatch", "type": "main", "index": 0 }], []] }
+  }
+}

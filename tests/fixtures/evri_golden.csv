@@ -1,0 +1,4 @@
+ CLIENT REFERNCE NO,BRAND NAME,HERMES BARCODE,ORDER NO,CUSTOMER NAME,POSTCODE,DOR LETTER DATE,CLIENT OR CUSTOMER COMMENTS,PARCEL VALUE,PRODUCT CATEGORY,PRODUCT DESCRIPTION,CARRIAGE,LOST OR DAMAGED
+REF-0001,Acme Prime,T0AB1234,ORD-1001,Customer,EC1A 1BB,,Consignment lost or Tracking not update,20,Other,Loss,,Lost Claim
+REF-0002,Acme Prime,T0CD5678,ORD-1002,Customer,M1 1AE,,Consignment lost or Tracking not update,20,Other,Loss,,Lost Claim
+REF-0003,Standard Co,H0EF9012,ORD-1003,Customer,LS1 4DY,,Consignment lost or Tracking not update,25,Other,Loss,,Lost Claim

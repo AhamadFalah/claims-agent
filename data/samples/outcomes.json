@@ -1,0 +1,5 @@
+[
+  { "barcode": "T0AB1234", "claim_status": "Accepted (DA1)", "settlement_amount": 20 },
+  { "barcode": "T0CD5678", "claim_status": "SP1" },
+  { "barcode": "H0EF9012", "claim_status": "Rejected (OOT)" }
+]
