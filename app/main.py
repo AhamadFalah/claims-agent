@@ -139,6 +139,24 @@ def _channel_for_claim(claim: Claim) -> Channel:
     )
 
 
+def _result(correlation_id: str, claim: Claim, verdict: str | None, flags: list[str], steps: list[dict]) -> dict:
+    out = {
+        "correlation_id": correlation_id,
+        "status": claim.status.value,
+        "verdict": verdict,
+        "reason": claim.status_reason,
+        "parcel_value": claim.parcel_value,
+        "cost_value": claim.cost_value,
+        "credit_owed": claim.credit_owed(),
+        "risk_score": claim.risk_score,
+        "fraud_flags": flags,
+        "steps": steps,
+    }
+    if claim.submission_ref:
+        out["submission_ref"] = claim.submission_ref
+    return out
+
+
 @app.post("/claims/{correlation_id}/process")
 def process_claim(correlation_id: str, body: ProcessBody | None = Body(default=None)) -> dict:
     """Autonomous Evri loop for one claim: enrich -> risk -> decide -> generate -> dispatch.
@@ -168,20 +186,39 @@ def process_claim(correlation_id: str, body: ProcessBody | None = Body(default=N
     deps.repo.save(claim)
     steps: list[dict] = []
 
-    # Enrich (Tavily / stub) + deterministic risk score
+    # Enrich/verify against real carrier tracking (AfterShip) + deterministic risk score
     enrichment = enrich(claim.tracking_number, claim.postcode)
     claim.risk_score, flags = assess_risk(claim, enrichment)
-    claim.fraud_flags = "\n".join(flags)
+    carrier_line = f"carrier:{enrichment.get('tag') or enrichment.get('source')} ({enrichment.get('verdict')})"
+    claim.fraud_flags = "\n".join([carrier_line, *flags])
     steps.append(
         {
             "step": "enrich",
+            "source": enrichment.get("source"),
+            "tag": enrichment.get("tag"),
+            "verdict": enrichment.get("verdict"),
             "tracking_summary": enrichment.get("tracking_summary"),
             "risk_score": claim.risk_score,
             "fraud_flags": flags,
         }
     )
 
-    # Decide eligibility: New -> Pending (or Rejected)
+    # Carrier-data verification gate (before eligibility):
+    #   Delivered    -> reject (not eligible)
+    #   in transit   -> hold (too early to claim)
+    verdict = enrichment.get("verdict")
+    if enrichment.get("delivered"):
+        transition(claim, Status.REJECTED, reason="Carrier tracking shows Delivered — not eligible")
+        _project(deps, claim)
+        steps.append({"step": "verify", "status": claim.status.value, "reason": claim.status_reason})
+        return _result(correlation_id, claim, verdict, flags, steps)
+    if verdict == "in_progress":
+        transition(claim, Status.ON_HOLD, reason="Parcel still in transit — too early to claim")
+        _project(deps, claim)
+        steps.append({"step": "verify", "status": claim.status.value, "reason": claim.status_reason})
+        return _result(correlation_id, claim, verdict, flags, steps)
+
+    # Eligibility decision: New -> Pending (or Rejected by channel rules)
     channel = _channel_for_claim(claim)
     new_status = decide(claim, channel)
     transition(claim, new_status, reason=claim.status_reason)
@@ -189,12 +226,7 @@ def process_claim(correlation_id: str, body: ProcessBody | None = Body(default=N
     steps.append({"step": "decide", "status": claim.status.value, "reason": claim.status_reason})
 
     if claim.status == Status.REJECTED:
-        return {
-            "correlation_id": correlation_id,
-            "status": claim.status.value,
-            "reason": claim.status_reason,
-            "steps": steps,
-        }
+        return _result(correlation_id, claim, verdict, flags, steps)
 
     # Generate byte-exact CSV + mock dispatch: Pending -> Raised
     csv_bytes = generate_evri_csv([claim])
@@ -211,17 +243,7 @@ def process_claim(correlation_id: str, body: ProcessBody | None = Body(default=N
         }
     )
 
-    return {
-        "correlation_id": correlation_id,
-        "status": claim.status.value,
-        "submission_ref": claim.submission_ref,
-        "parcel_value": claim.parcel_value,
-        "cost_value": claim.cost_value,
-        "credit_owed": claim.credit_owed(),
-        "risk_score": claim.risk_score,
-        "fraud_flags": flags,
-        "steps": steps,
-    }
+    return _result(correlation_id, claim, verdict, flags, steps)
 
 
 @app.post("/batches/generate")
