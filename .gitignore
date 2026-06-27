@@ -9,3 +9,6 @@ data/batches/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+attio-docs-llms.txt
+node_modules/
+dist/
