@@ -473,6 +473,18 @@
       "typeVersion": 1.1,
       "position": [3408, 320],
       "notes": "Agent memory (WRITE) via Mubit control-http POST /v2/control/ingest. Auth via env MUBIT_API_KEY (Bearer). Max 1000 items/request."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Final node: surface the AI Agent's verdict + the fused decision so the\n// agent output is visible in the execution panel (and the n8n logs).\nconst fuse = $('Fuse + decide').item.json;\nlet agentOutput = null;\ntry { const a = $('AI Agent: validate claim').item.json; agentOutput = a.output ?? a; } catch (e) {}\nconst summary = {\n  correlation_id: fuse.correlation_id,\n  decision: fuse.decision,\n  attio_status: fuse.attio_status,\n  verdict: fuse.verdict,\n  agent_output: agentOutput,\n};\nconsole.log('=== AGENT VERDICT ===\\n' + JSON.stringify(summary, null, 2));\nreturn { json: summary };"
+      },
+      "id": "log-agent-verdict-0001",
+      "name": "Log: agent verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4784, -160],
+      "notes": "Final node — console.logs and outputs the Gemini agent verdict + fused decision so the agent output shows visually in the execution."
     }
   ],
   "connections": {
@@ -498,6 +510,7 @@
     "Fuse + decide": { "main": [ [ { "node": "Attio: update status", "type": "main", "index": 0 } ] ] },
     "Attio: update status": { "main": [ [ { "node": "Firestore: write VALIDATED", "type": "main", "index": 0 } ] ] },
     "Firestore: write VALIDATED": { "main": [ [ { "node": "Process Claim (FastAPI)", "type": "main", "index": 0 } ] ] },
+    "Process Claim (FastAPI)": { "main": [ [ { "node": "Log: agent verdict", "type": "main", "index": 0 } ] ] },
     "Build ERROR doc": { "main": [ [ { "node": "Firestore: write ERROR", "type": "main", "index": 0 } ] ] }
   },
   "settings": { "executionOrder": "v1", "binaryMode": "separate" },
