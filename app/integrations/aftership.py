@@ -18,25 +18,7 @@ import httpx
 BASE = "https://api.aftership.com/tracking"
 
 
-def lookup(tracking_number: str) -> dict | None:
-    key = os.getenv("AFTERSHIP_API_KEY")
-    if not key or not tracking_number:
-        return None
-    version = os.getenv("AFTERSHIP_VERSION", "2026-01")
-    try:
-        with httpx.Client(timeout=15) as http:
-            resp = http.get(
-                f"{BASE}/{version}/trackings",
-                params={"tracking_numbers": tracking_number},
-                headers={"as-api-key": key, "Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-            trackings = resp.json().get("data", {}).get("trackings", [])
-    except Exception:
-        return None
-    if not trackings:
-        return None
-    t = trackings[0]
+def _flatten(t: dict) -> dict:
     checkpoints = t.get("checkpoints") or []
     last = checkpoints[-1] if checkpoints else {}
     return {
@@ -48,3 +30,36 @@ def lookup(tracking_number: str) -> dict | None:
         "last_checkpoint_time": last.get("checkpoint_time"),
         "checkpoint_count": len(checkpoints),
     }
+
+
+def lookup(tracking_number: str) -> dict | None:
+    """Return the parcel's AfterShip status, registering it first if needed.
+
+    AfterShip only returns trackings it already knows, so on a miss we POST to
+    create (register) the tracking — matching AfterShip's track-then-read model —
+    and return whatever status it has so far. Returns None on any failure so the
+    pipeline falls back to Tavily / stub.
+    """
+    key = os.getenv("AFTERSHIP_API_KEY")
+    if not key or not tracking_number:
+        return None
+    version = os.getenv("AFTERSHIP_VERSION", "2026-01")
+    slug = os.getenv("AFTERSHIP_SLUG", "myhermes-uk")
+    headers = {"as-api-key": key, "Content-Type": "application/json"}
+    base = f"{BASE}/{version}/trackings"
+    try:
+        with httpx.Client(timeout=15) as http:
+            resp = http.get(base, params={"tracking_numbers": tracking_number}, headers=headers)
+            resp.raise_for_status()
+            trackings = resp.json().get("data", {}).get("trackings", [])
+            if trackings:
+                return _flatten(trackings[0])
+            # Not tracked yet -> register it so AfterShip starts fetching carrier data.
+            created = http.post(base, headers=headers, json={"tracking": {"tracking_number": tracking_number, "slug": slug}})
+            if created.status_code in (200, 201):
+                t = (created.json().get("data") or {}).get("tracking")
+                if t:
+                    return _flatten(t)
+            return None
+    except Exception:
+        return None
