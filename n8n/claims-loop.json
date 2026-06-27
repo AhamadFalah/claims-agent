@@ -2,31 +2,18 @@
   "name": "claims-loop",
   "nodes": [
     {
-      "id": "node-webhook",
-      "name": "Webhook: claim-intake",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2.1,
-      "position": [220, 400],
-      "webhookId": "claim-intake",
-      "onError": "continueRegularOutput",
-      "notes": "POST /claim-intake. Accepts multipart/form-data; the uploaded photo lands in binary property 'data'. Responds via the Respond to Webhook nodes.",
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "claim-intake",
-        "responseMode": "responseNode",
-        "options": { "binaryPropertyName": "data" }
-      }
-    },
-    {
       "id": "node-init",
       "name": "Generate correlation_id",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [420, 400],
+      "position": [
+        420,
+        400
+      ],
       "notes": "Step 2: generate correlation_id (UUID) BEFORE any Attio call so retries are idempotent. Also normalizes form fields and derives the merchant SERVER-SIDE (the customer never picks it). Sets parcel_value = merchant ceiling (the value submitted to Evri), kept separate from cost_value (customer-stated).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const inp = $input.first().json;\nconst b = inp.body || inp;\n\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Normalize incoming form fields\nconst email = String(b.email || '').trim().toLowerCase();\nconst name = String(b.name || b.customer_name || '').trim();\nconst phone = String(b.phone || b.phone_number || '').trim();\nconst courier = String(b.courier || 'Evri').trim();\nconst claim_type = String(b.claim_type || 'Lost').trim();\nconst tracking_number = String(b.tracking_number || '').trim();\nconst additional_tracking = String(b.additional_tracking || '').trim();\nconst order_number = String(b.order_number || '').trim();\nconst delivery_postcode = String(b.delivery_postcode || b.postcode || '').trim();\nconst parcel_count = Number(b.parcel_count || 1);\nconst cost_value = Number(b.cost_value || 0); // customer-stated cost of goods\nconst customer_comment = String(b.customer_comment || b.comment || '').trim();\n\n// Resolve merchant SERVER-SIDE (the customer never selects this).\n// Keyed off submission context: a per-merchant token the form embeds (merchant_key)\n// or a ?m= query param on the webhook URL.\nconst merchant_key = String(b.merchant_key || (inp.query && inp.query.m) || 'demo').trim();\nconst MERCHANTS = {\n  'brand-a': { name: 'Brand A Ltd', domain: 'brand-a.com', ceiling: 20 },\n  'brand-b': { name: 'Brand B Ltd', domain: 'brand-b.com', ceiling: 25 },\n  'demo': { name: 'Demo Merchant', domain: 'demo-merchant.com', ceiling: 20 }\n};\nconst merchant = MERCHANTS[merchant_key] || MERCHANTS['demo'];\n\n// Pricing rule: parcel_value submitted to Evri = merchant ceiling.\n// KEEP SEPARATE from cost_value. Client credit = min(cost_value, ceiling).\nconst parcel_value = merchant.ceiling;\n\nreturn [{ json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment, merchant\n} }];"
+        "jsCode": "const item = $input.first();\nconst inp = item.json || {};\nconst b = inp.body || inp;\n\nfunction pick() {\n  for (let i = 0; i < arguments.length; i++) {\n    const k = arguments[i];\n    if (b[k] !== undefined && b[k] !== null && b[k] !== '') return b[k];\n  }\n  return '';\n}\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Single business -> one fixed Evri claim ceiling (the cap submitted to Evri).\n// Client credit = min(cost_value, CEILING); parcel_value submitted = CEILING.\nconst CEILING = 20;\n\n// Map the n8n Form fields (keys are the field labels) to normalized slugs.\nconst email = String(pick('customer email address', 'email')).trim().toLowerCase();\nlet name = String(pick('name', 'customer_name', 'full name')).trim();\nif (!name && email) name = email.split('@')[0];\nconst phone = String(pick('phone number', 'phone', 'phone_number')).trim();\nconst order_number = String(pick('Order Number', 'order_number')).trim();\nconst courier = String(pick('Courier', 'courier') || 'Evri').trim();\nconst claim_raw = String(pick('Claim for Loss or Damage', 'claim_type') || 'Lost');\nconst claim_type = /damage/i.test(claim_raw) ? 'Damage' : 'Lost'; // form 'Loss' -> Attio 'Lost'\nconst parcel_count = Number(pick('Number of Parcel Claim', 'parcel_count') || 1);\nconst tracking_number = String(pick('Tracking Number 1', 'tracking_number')).trim();\nconst additional_tracking = String(pick('More Tracking Number if any', 'additional_tracking')).trim();\nconst delivery_postcode = String(pick('Delivery Destination Postcode', 'delivery_postcode', 'postcode')).trim();\nconst customer_comment = String(pick('What is the reason for your claim?', 'customer_comment', 'comment')).trim();\nconst cost_value = Number(pick('Cost Value', 'cost_value') || 0);\nconst parcel_value = CEILING;\n\nconst out = { json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment\n} };\n\n// Normalize whatever file the form uploaded to binary 'data' for the photo node.\nconst inb = item.binary || {};\nconst bk = Object.keys(inb)[0];\nif (bk) out.binary = { data: inb[bk] };\nreturn [out];"
       }
     },
     {
@@ -34,18 +21,29 @@
       "name": "Evri only?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [640, 400],
+      "position": [
+        640,
+        400
+      ],
       "notes": "Phase 1 gate, BEFORE any Attio write. Only Evri claims proceed. Non-Evri couriers are rejected immediately with no records created. true -> Upsert Person; false -> Respond: rejected (non-Evri).",
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "cond-evri",
               "leftValue": "={{ $('Generate correlation_id').item.json.courier }}",
               "rightValue": "Evri",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ]
         }
@@ -56,7 +54,10 @@
       "name": "Upsert Person",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [860, 300],
+      "position": [
+        860,
+        300
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
@@ -67,46 +68,38 @@
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendQuery": true,
-        "queryParameters": { "parameters": [{ "name": "matching_attribute", "value": "email_addresses" }] },
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "matching_attribute",
+              "value": "email_addresses"
+            }
+          ]
+        },
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ { data: { values: { name: $('Generate correlation_id').item.json.name, email_addresses: [$('Generate correlation_id').item.json.email], phone_numbers: $('Generate correlation_id').item.json.phone ? [$('Generate correlation_id').item.json.phone] : [] } } } }}",
-        "options": { "timeout": 15000 }
+        "jsonBody": "={{ { data: { values: { name: $('Generate correlation_id').item.json.name, email_addresses: [$('Generate correlation_id').item.json.email] } } } }}",
+        "options": {
+          "timeout": 15000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
-    },
-    {
-      "id": "node-merchant",
-      "name": "Upsert Merchant (companies)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [1060, 300],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000,
-      "notes": "Step 4 (Evri only): resolve merchant -> companies record id. Upserts the server-side-derived merchant by domain and sets its ceiling. Returns the company record id at data.id.record_id.",
-      "parameters": {
-        "method": "PUT",
-        "url": "https://api.attio.com/v2/objects/companies/records",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendQuery": true,
-        "queryParameters": { "parameters": [{ "name": "matching_attribute", "value": "domains" }] },
-        "sendBody": true,
-        "contentType": "json",
-        "specifyBody": "json",
-        "jsonBody": "={{ { data: { values: { name: $('Generate correlation_id').item.json.merchant.name, domains: [$('Generate correlation_id').item.json.merchant.domain], ceiling: $('Generate correlation_id').item.json.merchant.ceiling } } } }}",
-        "options": { "timeout": 15000 }
-      },
-      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ATTIO_CRED",
+          "name": "Attio API (Header Auth)"
+        }
+      }
     },
     {
       "id": "node-claim",
       "name": "Create Claim",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1260, 300],
+      "position": [
+        1260,
+        300
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
@@ -119,17 +112,27 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={{ { data: { values: { correlation_id: $('Generate correlation_id').item.json.correlation_id, order_number: $('Generate correlation_id').item.json.order_number, courier: $('Generate correlation_id').item.json.courier, tracking_number: $('Generate correlation_id').item.json.tracking_number, additional_tracking: $('Generate correlation_id').item.json.additional_tracking, claim_type: $('Generate correlation_id').item.json.claim_type, parcel_count: $('Generate correlation_id').item.json.parcel_count, delivery_postcode: $('Generate correlation_id').item.json.delivery_postcode, phone_number: $('Generate correlation_id').item.json.phone, customer_comment: $('Generate correlation_id').item.json.customer_comment, status: 'New', cost_value: $('Generate correlation_id').item.json.cost_value, parcel_value: $('Generate correlation_id').item.json.parcel_value, customer: [{ target_object: 'people', target_record_id: $('Upsert Person').item.json.data.id.record_id }], merchant: [{ target_object: 'companies', target_record_id: $('Upsert Merchant (companies)').item.json.data.id.record_id }] } } } }}",
-        "options": { "timeout": 15000 }
+        "jsonBody": "={{ { data: { values: { correlation_id: $('Generate correlation_id').item.json.correlation_id, order_number: $('Generate correlation_id').item.json.order_number, courier: $('Generate correlation_id').item.json.courier, tracking_number: $('Generate correlation_id').item.json.tracking_number, additional_tracking: $('Generate correlation_id').item.json.additional_tracking, claim_type: $('Generate correlation_id').item.json.claim_type, parcel_count: $('Generate correlation_id').item.json.parcel_count, delivery_postcode: $('Generate correlation_id').item.json.delivery_postcode, phone_number: $('Generate correlation_id').item.json.phone, customer_comment: $('Generate correlation_id').item.json.customer_comment, status: 'New', cost_value: $('Generate correlation_id').item.json.cost_value, parcel_value: $('Generate correlation_id').item.json.parcel_value, customer: [{ target_object: 'people', target_record_id: $('Upsert Person').item.json.data.id.record_id }] } } } }}",
+        "options": {
+          "timeout": 15000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ATTIO_CRED",
+          "name": "Attio API (Header Auth)"
+        }
+      }
     },
     {
       "id": "node-photo",
       "name": "Upload Photo",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1460, 300],
+      "position": [
+        1460,
+        300
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
@@ -143,21 +146,44 @@
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" },
-            { "parameterType": "formData", "name": "object", "value": "claims" },
-            { "parameterType": "formData", "name": "record_id", "value": "={{ $('Create Claim').item.json.data.id.record_id }}" }
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "Photographic_Evidence_supporting_Claim"
+            },
+            {
+              "parameterType": "formData",
+              "name": "object",
+              "value": "claims"
+            },
+            {
+              "parameterType": "formData",
+              "name": "record_id",
+              "value": "={{ $('Create Claim').item.json.data.id.record_id }}"
+            }
           ]
         },
-        "options": { "timeout": 15000 }
+        "options": {
+          "timeout": 15000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "REPLACE_ATTIO_CRED", "name": "Attio API (Header Auth)" } }
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ATTIO_CRED",
+          "name": "Attio API (Header Auth)"
+        }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "node-process",
       "name": "Process Claim (FastAPI)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [1660, 300],
+      "position": [
+        1660,
+        300
+      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
@@ -165,7 +191,9 @@
       "parameters": {
         "method": "POST",
         "url": "={{ ($env.AGENT_BASE_URL || 'http://localhost:8000') }}/claims/{{ $('Generate correlation_id').item.json.correlation_id }}/process",
-        "options": { "timeout": 30000 }
+        "options": {
+          "timeout": 30000
+        }
       }
     },
     {
@@ -173,12 +201,17 @@
       "name": "Respond: processed",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [1860, 300],
+      "position": [
+        1860,
+        300
+      ],
       "notes": "Step 8: 200 + claim reference for processed Evri claims.",
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ { ok: true, correlation_id: $('Generate correlation_id').item.json.correlation_id, claim_record_id: $('Create Claim').item.json.data.id.record_id, status: 'New', message: 'Claim captured and Evri processing started.' } }}",
-        "options": { "responseCode": 200 }
+        "options": {
+          "responseCode": 200
+        }
       }
     },
     {
@@ -186,24 +219,225 @@
       "name": "Respond: rejected (non-Evri)",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [860, 540],
+      "position": [
+        860,
+        540
+      ],
       "notes": "Phase 1: non-Evri couriers are rejected up front. No Attio records are created. Returns 422 with the reason.",
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ { ok: false, correlation_id: $('Generate correlation_id').item.json.correlation_id, courier: $('Generate correlation_id').item.json.courier, message: 'Rejected: only Evri claims are supported in Phase 1.' } }}",
-        "options": { "responseCode": 422 }
+        "options": {
+          "responseCode": 422
+        }
       }
+    },
+    {
+      "id": "e4286e3e-632b-4b0f-a2d2-969d656f72a2",
+      "name": "Form: claim-intake",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.1,
+      "position": [
+        220,
+        400
+      ],
+      "parameters": {
+        "path": "claim-intake",
+        "formTitle": "Courier Claim Intake",
+        "formDescription": "Submit a courier claim. Evri claims are processed automatically.",
+        "responseMode": "responseNode",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "customer email address",
+              "fieldType": "email",
+              "placeholder": "you@example.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "phone number",
+              "fieldType": "text",
+              "placeholder": "+44 7700 900000",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Order Number",
+              "fieldType": "text",
+              "placeholder": "e.g. ORD-10231",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Courier",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Evri"
+                  },
+                  {
+                    "option": "Royal Mail"
+                  },
+                  {
+                    "option": "DPD"
+                  },
+                  {
+                    "option": "Yodel"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Claim for Loss or Damage",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Loss"
+                  },
+                  {
+                    "option": "Damage"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Number of Parcel Claim",
+              "fieldType": "number",
+              "placeholder": "1",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Tracking Number 1",
+              "fieldType": "text",
+              "placeholder": "e.g. H00ABC123456",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "More Tracking Number if any",
+              "fieldType": "textarea",
+              "placeholder": "Additional tracking numbers, comma-separated"
+            },
+            {
+              "fieldLabel": "Delivery Destination Postcode",
+              "fieldType": "text",
+              "placeholder": "e.g. EC1A 1BB",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Photographic Evidence supporting Claim",
+              "fieldType": "file",
+              "acceptFileTypes": ".jpg,.jpeg,.png,.pdf",
+              "multipleFiles": false
+            },
+            {
+              "fieldLabel": "What is the reason for your claim?",
+              "fieldType": "textarea",
+              "placeholder": "Describe what happened",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Cost Value",
+              "fieldType": "number",
+              "placeholder": "Cost of the goods, e.g. 22",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Public intake form (responseNode mode -> the Respond to Webhook nodes return JSON). Fields arrive keyed by their labels; 'Generate correlation_id' maps them. Merchant is derived server-side, never collected here.",
+      "webhookId": "5eda34cc-b72f-4189-87aa-29bf6600e0d8"
     }
   ],
   "connections": {
-    "Webhook: claim-intake": { "main": [[{ "node": "Generate correlation_id", "type": "main", "index": 0 }]] },
-    "Generate correlation_id": { "main": [[{ "node": "Evri only?", "type": "main", "index": 0 }]] },
-    "Evri only?": { "main": [[{ "node": "Upsert Person", "type": "main", "index": 0 }], [{ "node": "Respond: rejected (non-Evri)", "type": "main", "index": 0 }]] },
-    "Upsert Person": { "main": [[{ "node": "Upsert Merchant (companies)", "type": "main", "index": 0 }]] },
-    "Upsert Merchant (companies)": { "main": [[{ "node": "Create Claim", "type": "main", "index": 0 }]] },
-    "Create Claim": { "main": [[{ "node": "Upload Photo", "type": "main", "index": 0 }]] },
-    "Upload Photo": { "main": [[{ "node": "Process Claim (FastAPI)", "type": "main", "index": 0 }]] },
-    "Process Claim (FastAPI)": { "main": [[{ "node": "Respond: processed", "type": "main", "index": 0 }]] }
+    "Generate correlation_id": {
+      "main": [
+        [
+          {
+            "node": "Evri only?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evri only?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Person",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: rejected (non-Evri)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Person": {
+      "main": [
+        [
+          {
+            "node": "Create Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Claim": {
+      "main": [
+        [
+          {
+            "node": "Upload Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Photo": {
+      "main": [
+        [
+          {
+            "node": "Process Claim (FastAPI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Claim (FastAPI)": {
+      "main": [
+        [
+          {
+            "node": "Respond: processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form: claim-intake": {
+      "main": [
+        [
+          {
+            "node": "Generate correlation_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1"
+  }
 }

@@ -4,7 +4,14 @@
 > Snapshot: 2026-06-27.
 
 ## TL;DR
-The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `/process` agent route are built and verified end-to-end. Remaining: deploy the agent publicly, point n8n at it, and add **AfterShip** for real tracking verification.
+The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `/process` agent route are built and verified end-to-end — **including a full live run through the n8n hosted form**.
+
+## Update — final live state (2026-06-27, later)
+- **Intake is now an n8n hosted Form** (`Form: claim-intake`), not the raw webhook. Public form URL: `https://abdulmateen77.app.n8n.cloud/form/claim-intake`. The Code node maps the form's field labels and normalizes the uploaded photo to binary `data`.
+- **AfterShip verification is built and live** (slug `myhermes-uk`, API `2026-01`). The agent gates on the carrier verdict: `Delivered` → Rejected, in-transit/out-for-delivery → **OnHold**, exception/no-scan → proceed. Verified live: a real `OutForDelivery` tracking drove a claim to **OnHold** with `risk_score 25`.
+- **Single business**: merchant resolution + the `Upsert Merchant` node were removed. One fixed `const CEILING = 20` in the Code node sets `parcel_value`. Flow is now: `Form → Generate correlation_id → Evri only? → Upsert Person → Create Claim → Upload Photo → Process Claim → Respond` (9 nodes). Attio `merchant` attr + `companies.ceiling` remain in the schema, just unpopulated.
+- **Agent reachability**: exposed to n8n Cloud via an **ephemeral cloudflared tunnel** (TryCloudflare). This URL changes on restart — **deploy to Render for a stable demo** and update the `Process Claim` node URL. The agent must run with `ATTIO_API_KEY` + `AFTERSHIP_API_KEY`.
+- **Decision pending**: confirm the ceiling (currently **£20**; flip to £25 in one line if needed).
 
 ---
 
