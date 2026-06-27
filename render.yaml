@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: claims-agent
+    runtime: docker
+    region: frankfurt
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: ATTIO_API_KEY
+        sync: false
+      - key: MUBIT_API_KEY
+        sync: false

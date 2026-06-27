@@ -1,0 +1,19 @@
+channels:
+  - id: premium_a
+    name: Acme Prime
+    ceiling: 20
+    damage_allowed: true
+    barcode_prefix: T0
+    provider: direct_mailbox
+  - id: premium_b
+    name: Bolt Prime
+    ceiling: 20
+    damage_allowed: true
+    barcode_prefix: T0
+    provider: direct_mailbox
+  - id: standard
+    name: Standard Co
+    ceiling: 25
+    damage_allowed: false
+    barcode_prefix: H0
+    provider: ticketing

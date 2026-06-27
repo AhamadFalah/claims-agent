@@ -1,0 +1,4 @@
+customer email address,phone number,Order Number,Courier,Claim for Loss or Damage,Number of Parcel Claim,Tracking Number 1,More Tracking Number if any,Delivery Destination Postcode,Photographic Evidence supporting Claim,What is the reason for your claim?,Cost Value
+jane@example.com,07700900111,ORD-1001,Evri,Loss,1,T0AB1234,,EC1A 1BB,,Parcel never arrived - tracking stuck on out for delivery,18
+sam@example.com,07700900222,ORD-1003,Evri,Loss,1,H0EF9012,,LS1 4DY,,Tracking shows delivered but nothing received,40
+mo@example.com,07700900333,ORD-2002,Evri,Damage,2,T0CD5678,T0CD5679,M1 1AE,https://drive.example/p1.jpg,Items arrived smashed in transit,30
