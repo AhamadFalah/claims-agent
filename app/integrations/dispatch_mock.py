@@ -1,6 +1,7 @@
-"""Mock dispatch — writes the CSV to disk and returns a fake submission ref.
+"""Mock dispatch — writes the CSV to disk and returns a synthetic submission ref.
 
-Stands in for the real email-to-Evri path (no SMTP, no live mailboxes).
+Stands in for the email-to-Evri path. Evri has no submission API (it is
+email-driven), so this is the correct boundary to mock for a demo.
 """
 
 from __future__ import annotations
@@ -17,6 +18,6 @@ def dispatch(csv_bytes: bytes, channel_name: str) -> dict:
     path = os.path.join(DISPATCH_DIR, f"{sha[:16]}.csv")
     with open(path, "wb") as f:
         f.write(csv_bytes)
-    # Deterministic fake reference in Evri's NNNNNN-NNNNNN shape.
+    # Deterministic synthetic reference in Evri's NNNNNN-NNNNNN shape.
     ref = f"{int(sha[:6], 16) % 1000000:06d}-{int(sha[6:12], 16) % 1000000:06d}"
     return {"submission_ref": ref, "file_path": path, "file_sha256": sha}

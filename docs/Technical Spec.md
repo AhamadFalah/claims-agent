@@ -41,7 +41,7 @@ claims-agent/
       evri_csv.py           # PORTED, byte-exact. Do not touch the header.
     integrations/
       attio.py              # REST v2 client
-      dispatch_mock.py      # fake send
+      dispatch_mock.py      # mock send (Evri is email-only, no API)
     persistence/
       db.py, models.py, repo.py
     config/
@@ -261,7 +261,7 @@ minima.feedback(rec.recommendation_id, model_id, "success",
 ## Demo-safety engineering
 - **Determinism:** temperature 0; seeded fixtures for Tavily + outcomes -> identical, offline-safe runs.
 - **Idempotency:** Attio upsert by `correlation_id`; outcome ingest keyed by `(claim_id, code)`; n8n re-runs are no-ops.
-- **Mock dispatch:** writes CSV to `data/batches/<sha256>.csv`, returns a fake ref `260428-014769` so `Raised` has real-looking data.
+- **Mock dispatch:** writes CSV to `data/batches/<sha256>.csv`, returns a synthetic ref `260428-014769` so `Raised` has real-looking data.
 - **Never break the snapshot test** - wire into CI; green check + Aikido both visible to judges.
 
 Related: [[Architecture]] · [[Evri File Formats]] · [[State Machine & Data]] · [[Integrations Reference]] · [[Build Plan & Timeline]]

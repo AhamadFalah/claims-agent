@@ -52,9 +52,19 @@ curl -s localhost:8000/claims/extract -H 'content-type: application/json' \
 ```
 Or import `n8n/claims-loop.json` into n8n and POST to its `claim-intake` webhook.
 
-## Partner technologies
-Attio · Google Gemini · n8n · Tavily (core) + Aikido · Minima/Mubit (bonus).
-Details in [docs/Partner Tech](docs/Partner%20Tech.md).
+## Partner technologies — what each does, and where in the code
+| Technology | Role in the project | Where |
+|---|---|---|
+| **Attio** | System of record + live case board; each claim is a record, status attribute = the pipeline. Upsert by `correlation_id`. | [`app/integrations/attio.py`](app/integrations/attio.py) |
+| **Google Gemini** | Reads the free-text claim email and returns a structured, schema-validated claim (judgment, not formatting). | [`app/agent/extract.py`](app/agent/extract.py) |
+| **n8n** | Orchestrates the autonomous loop — webhook trigger chains the agent endpoints. | [`n8n/claims-loop.json`](n8n/claims-loop.json) |
+| **Tavily** | Enriches the claim (tracking status / address sanity). | [`app/agent/enrich.py`](app/agent/enrich.py) |
+| **Aikido** | Security scanning of this repo (CI/code scan). | repo-connected |
+| **Minima / Mubit** | Routes each LLM call to the cheapest model that clears the quality bar. | [`app/agent/route.py`](app/agent/route.py) |
+
+Each integration calls the live service when its API key is set and otherwise
+falls back to a deterministic stub, so the project is runnable and testable with
+zero credentials. More detail in [docs/Partner Tech](docs/Partner%20Tech.md).
 
 ## Docs / team knowledge base
 Open the `docs/` folder as an Obsidian vault, or browse on GitHub starting at
@@ -63,7 +73,13 @@ Open the `docs/` folder as an Obsidian vault, or browse on GitHub starting at
 [Integrations Reference](docs/Integrations%20Reference.md),
 [Pitch](docs/Pitch.md), [Build Plan & Timeline](docs/Build%20Plan%20%26%20Timeline.md).
 
-## Note on heritage
-The byte-exact generator and state machine are ported from an existing internal
-project and clearly attributed; the agent layer, partner-tool integrations, and
-orchestration are built new for this hackathon.
+## What was built at the hackathon
+Built new for this event: the agentic loop, every partner-tool integration
+(Attio, Gemini, Tavily, n8n, Minima), the FastAPI service, the orchestration
+workflow, the test suite, and the demo. As permitted by the rules, two small,
+self-contained deterministic utilities — the Evri CSV byte-formatter and the
+claim state-machine — are adapted from prior work and noted here for transparency;
+they are the "hands," and everything that makes this an autonomous agent is new.
+
+## License
+MIT — see [LICENSE](LICENSE).

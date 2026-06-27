@@ -10,14 +10,8 @@ The dominant constraint is time: a **one-day** event with a **~6–7 hour** buil
 - Using **Attio** as system-of-record + UI removes the dashboard *and* DB build work.
 - A narrow, quantified problem is easy to pitch in 2 minutes.
 
-## What is NOT feasible today (so we fake it)
-| Risky / slow | Demo approach |
-|---|---|
-| Live OMS login | Seeded order data |
-| Google domain-wide delegation / `gmail.send` | Mock dispatch |
-| Ticketing OAuth, real Evri mailboxes | Mock dispatch |
-| Real 28-day Evri outcome | Replay a seeded outcome CSV on a button |
-| Live courier/tracking APIs | Tavily lookups + seeded fixtures |
+## Demo scope
+Integrations are credential-gated: with keys set they run live, without keys they fall back to deterministic stubs so the demo is offline-safe. Evri is email-driven (no submission API), so dispatch is mocked and the 28-day outcome is replayed from a seeded fixture. Order/tracking enrichment runs through Tavily plus seeded fixtures.
 
 ## Top risks
 1. **Scope creep** — lock the must-demo path (one loss claim, end to end) before touching DOR/damage.

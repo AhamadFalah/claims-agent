@@ -13,7 +13,7 @@ Canonical source for customer name, postcode, order value, despatch date. **OMS 
 
 ## Spreadsheet tracker (19-column contract)
 Form fills cols 1-15; system writes **16 (Status), 17 (Comment), 19 (Credit Date)**; **never 18 (Amount)** - operator-only.
-- Read cols incl. Client (3), Mintsoft/OMS Order Number (5), Courier (6, filter == `Evri`), Loss/Damage (7), Tracking (9), Postcode (11), Cost Value (14).
+- Read cols incl. Client (3), OMS Order Number (5), Courier (6, filter == `Evri`), Loss/Damage (7), Tracking (9), Postcode (11), Cost Value (14).
 - Status enum (col 16): blank, `Raised`, `Accepted`, `Rejected`, `DOR`, `OnHold`.
 - Comment (col 17) write rules: blank->Raised = submission ref; Raised->Accepted = append ` - credit £X`; Raised->Rejected = `code - reason`; ->OnHold = free text.
 - Auth: service-account JSON; sheet shared as Editor (fail fast if Viewer).
