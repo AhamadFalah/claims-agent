@@ -75,7 +75,7 @@ Or import `n8n/outcome-replay.json` into n8n and submit the **`claim-intake`** f
 | **Firebase / Firestore** | Per-claim validation document store; states `VALIDATING → VALIDATED → ERROR` written via the REST API as the claim moves through validation. | `n8n/outcome-replay.json` (Firestore nodes) |
 | **Tavily** | Enriches the claim (tracking status / address sanity). | [`app/agent/enrich.py`](app/agent/enrich.py) |
 | **Aikido** | Security scanning of this repo (CI/code scan). | repo-connected |
-| **Minima / Mubit** | Routes each LLM call to the cheapest model that clears the quality bar. | [`app/agent/route.py`](app/agent/route.py) |
+| **Minima / Mubit** | (1) Routes each LLM call to the cheapest model that clears the quality bar. (2) **Agent memory** for the n8n validation agent — two HTTP Request tools call Mubit control-http (`/v2/control/query` to recall, `/v2/control/ingest` to store) so the agent learns from past claims. | [`app/agent/route.py`](app/agent/route.py) · `n8n/outcome-replay.json` |
 
 Each integration calls the live service when its API key is set and otherwise
 falls back to a deterministic stub, so the project is runnable and testable with

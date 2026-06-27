@@ -297,7 +297,7 @@
         "text": "=Validate this parcel-delivery claim. A supporting photo may be attached as an image (optional). If no photo is provided, judge from the claim metadata and customer_comment alone and lower confidence accordingly.\n\nCLAIM (JSON):\n{{ $json.claimJson }}\n\nCross-check the photo against the customer_comment and the claim metadata, assess damage severity/types, authenticity (screenshot/reused), and consistency. You are an ADVISOR ONLY — a deterministic system makes the final accept/reject/escalate decision, so report honestly and do not inflate confidence. Respond with ONLY the verdict object that conforms to the required output schema.",
         "hasOutputParser": true,
         "options": {
-          "systemMessage": "You are a parcel-claims validation analyst for a UK courier (Evri). Judge whether a claim is GENUINE, INCONSISTENT, INSUFFICIENT_EVIDENCE, or SUSPECTED_FRAUD by cross-checking the attached photo against the claim. You are advisory only; the deterministic system owns the final decision.",
+          "systemMessage": "You are a parcel-claims validation analyst for a UK courier (Evri). Judge whether a claim is GENUINE, INCONSISTENT, INSUFFICIENT_EVIDENCE, or SUSPECTED_FRAUD by cross-checking the attached photo against the claim. First call the 'Mubit: recall memory' tool to check for relevant past claims, lessons, or fraud patterns; after deciding, call 'Mubit: store memory' to save a concise lesson. You are advisory only; the deterministic system owns the final decision.",
           "passthroughBinaryImages": true
         }
       },
@@ -434,6 +434,45 @@
       "position": [3952, 128],
       "onError": "continueRegularOutput",
       "notes": "Upsert the claim doc with state ERROR."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Recall relevant past claim-validation memories (facts, lessons, prior verdicts) from Mubit agent memory. Call this BEFORE finalising the verdict, asking a natural-language question about the current claim (tracking number, customer email, claim type, or similar past fraud patterns).",
+        "method": "POST",
+        "url": "={{ $env.MUBIT_BASE_URL || 'https://api.mubit.ai' }}/v2/control/query",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Authorization", "value": "=Bearer {{ $env.MUBIT_API_KEY }}" }, { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"query\": \"{query}\",\n  \"budget\": \"mid\"\n}",
+        "placeholderDefinitions": { "values": [ { "name": "query", "description": "Natural-language question to search the agent's memory", "type": "string" } ] },
+        "optimizeResponse": true
+      },
+      "id": "mubit-recall-0001",
+      "name": "Mubit: recall memory",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [3216, 320],
+      "notes": "Agent memory (READ) via Mubit control-http POST /v2/control/query. Auth via env MUBIT_API_KEY (Bearer). VERIFY base URL + the query body field name ('query') against console.mubit.ai — docs did not pin them down."
+    },
+    {
+      "parameters": {
+        "toolDescription": "Store a new memory in Mubit after deciding: a concise fact or lesson about this claim and its verdict, so future claims benefit from it. Provide a single 'content' string.",
+        "method": "POST",
+        "url": "={{ $env.MUBIT_BASE_URL || 'https://api.mubit.ai' }}/v2/control/ingest",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Authorization", "value": "=Bearer {{ $env.MUBIT_API_KEY }}" }, { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"items\": [\n    { \"type\": \"lesson\", \"content\": \"{content}\" }\n  ]\n}",
+        "placeholderDefinitions": { "values": [ { "name": "content", "description": "Concise fact/lesson to remember about this claim and its verdict", "type": "string" } ] }
+      },
+      "id": "mubit-store-0001",
+      "name": "Mubit: store memory",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [3408, 320],
+      "notes": "Agent memory (WRITE) via Mubit control-http POST /v2/control/ingest. Auth via env MUBIT_API_KEY (Bearer). Max 1000 items/request."
     }
   ],
   "connections": {
@@ -454,6 +493,8 @@
     "AI Agent: validate claim": { "main": [ [ { "node": "Fuse + decide", "type": "main", "index": 0 } ], [ { "node": "Build ERROR doc", "type": "main", "index": 0 } ] ] },
     "Google Gemini Chat Model": { "ai_languageModel": [ [ { "node": "AI Agent: validate claim", "type": "ai_languageModel", "index": 0 } ] ] },
     "Structured Output Parser": { "ai_outputParser": [ [ { "node": "AI Agent: validate claim", "type": "ai_outputParser", "index": 0 } ] ] },
+    "Mubit: recall memory": { "ai_tool": [ [ { "node": "AI Agent: validate claim", "type": "ai_tool", "index": 0 } ] ] },
+    "Mubit: store memory": { "ai_tool": [ [ { "node": "AI Agent: validate claim", "type": "ai_tool", "index": 0 } ] ] },
     "Fuse + decide": { "main": [ [ { "node": "Attio: update status", "type": "main", "index": 0 } ] ] },
     "Attio: update status": { "main": [ [ { "node": "Firestore: write VALIDATED", "type": "main", "index": 0 } ] ] },
     "Firestore: write VALIDATED": { "main": [ [ { "node": "Process Claim (FastAPI)", "type": "main", "index": 0 } ] ] },

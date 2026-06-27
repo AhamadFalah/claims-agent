@@ -28,6 +28,7 @@ The Attio data model, the **live** n8n `outcome-replay` workflow (intake + Gemin
 - **Photo is optional** end-to-end: `Upload Photo` continues on a missing file (`onError`), the agent runs text-only when no image is attached, and the photo gate is no longer a hard reject in `Fuse + decide`.
 - **Best-practice early response:** the form is acked right after the `VALIDATING` write, so the Gemini/fusion work runs asynchronously and a slow/failed LLM call never hangs the form.
 - This repo was synced to match the live workflow (`n8n/outcome-replay.json`, `contract/verdict.schema.json`, `.env.example` Firebase vars). **No app code changed** — the FastAPI `/claims/{id}/process` and `/outcomes/ingest` contracts already match what n8n calls.
+- **Mubit agent memory** added to the validation agent: two `HTTP Request Tool` sub-nodes (`Mubit: recall memory` → `POST /v2/control/query`, `Mubit: store memory` → `POST /v2/control/ingest`) connected via `ai_tool`. The agent recalls past lessons before deciding and stores one after. Auth via `MUBIT_API_KEY` (Bearer, env — not hardcoded). ⚠️ Verify the Mubit base URL and the query body field name against console.mubit.ai (the public docs don't pin them down).
 
 ---
 
