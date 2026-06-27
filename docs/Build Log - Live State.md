@@ -11,7 +11,12 @@ The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `
 - **AfterShip verification is built and live** (slug `myhermes-uk`, API `2026-01`). The agent gates on the carrier verdict: `Delivered` → Rejected, in-transit/out-for-delivery → **OnHold**, exception/no-scan → proceed. Verified live: a real `OutForDelivery` tracking drove a claim to **OnHold** with `risk_score 25`.
 - **Single business**: merchant resolution + the `Upsert Merchant` node were removed. One fixed `const CEILING = 20` in the Code node sets `parcel_value`. Flow is now: `Form → Generate correlation_id → Evri only? → Upsert Person → Create Claim → Upload Photo → Process Claim → Respond` (9 nodes). Attio `merchant` attr + `companies.ceiling` remain in the schema, just unpopulated.
 - **Agent reachability**: exposed to n8n Cloud via an **ephemeral cloudflared tunnel** (TryCloudflare). This URL changes on restart — **deploy to Render for a stable demo** and update the `Process Claim` node URL. The agent must run with `ATTIO_API_KEY` + `AFTERSHIP_API_KEY`.
-- **Decision pending**: confirm the ceiling (currently **£20**; flip to £25 in one line if needed).
+- **Ceiling locked at £25** (`const CEILING = 25` in the n8n Code node).
+
+## Update 2 — outcome loop live (2026-06-27, later still)
+- **The loop now drives to outcome.** `/outcomes/ingest` resolves a claim Raised → **Accepted** (with settlement) / **Rejected** / **DOR**, and **hydrates the claim from Attio** when it's not in the agent's in-memory repo (`AttioClient.get_claim_by_tracking`) — so it survives agent restarts. Verified live: two `Raised` claims resolved via the tunnel → Accepted (`settlement 25`) and DOR, hydrated from Attio after an agent restart. Tests: `tests/test_outcomes.py` (in-memory + hydration), suite 12/12 green.
+- **`n8n/outcome-replay.json`** added — an importable ops form ("Enter Evri Outcome": Tracking, outcome code, settlement) → `POST {AGENT}/outcomes/ingest` → Respond. Validated via the n8n MCP. **Not auto-deployed** (see collision note).
+- ⚠️ **n8n canvas collision**: the live `claims-loop` was being hand-edited in the canvas (a full duplicate flow, a re-added `Upsert Merchant`, and native `AfterShip: Register Tracking` / `Get Status` nodes appeared). API-driven deploys and manual canvas edits fight each other. **Decide one owner for the workflow.** The repo's `n8n/claims-loop.json` is the clean, canonical version.
 
 ---
 

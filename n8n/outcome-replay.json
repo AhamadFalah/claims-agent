@@ -1,0 +1,78 @@
+{
+  "name": "outcome-replay",
+  "nodes": [
+    {
+      "id": "n-form",
+      "name": "Outcome: Evri result",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "webhookId": "outcome-replay",
+      "notes": "Ops-facing form to record the 28-day Evri outcome for a claim. Drives the claim Raised -> Accepted/Rejected/DOR on the Attio board.",
+      "parameters": {
+        "path": "outcome-replay",
+        "formTitle": "Enter Evri Outcome",
+        "formDescription": "Record the 28-day Evri outcome for a claim.",
+        "responseMode": "responseNode",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "Tracking / Barcode", "fieldType": "text", "requiredField": true, "placeholder": "e.g. T0047A0709000856" },
+            { "fieldLabel": "Evri outcome code", "fieldType": "text", "requiredField": true, "placeholder": "Accepted (DA1) | SP1 | Rejected (OOT)" },
+            { "fieldLabel": "Settlement amount", "fieldType": "number", "placeholder": "optional; defaults to ceiling on Accept" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n-code",
+      "name": "Build outcome payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "notes": "Maps the form labels to the /outcomes/ingest body {barcode, claim_status, settlement_amount?}.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const b = $input.first().json;\nfunction pick(){for(let i=0;i<arguments.length;i++){const k=arguments[i];if(b[k]!==undefined&&b[k]!==null&&b[k]!=='')return b[k];}return '';}\nconst barcode = String(pick('Tracking / Barcode','barcode','tracking_number')).trim();\nconst claim_status = String(pick('Evri outcome code','claim_status')).trim();\nconst settle = pick('Settlement amount','settlement_amount');\nconst out = { barcode, claim_status };\nif (settle !== '' && settle !== undefined && settle !== null) out.settlement_amount = Number(settle);\nreturn [{ json: out }];"
+      }
+    },
+    {
+      "id": "n-http",
+      "name": "POST /outcomes/ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [680, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "Calls the FastAPI agent. Set AGENT_BASE_URL (or edit the URL) to the public agent URL (tunnel/Render).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.AGENT_BASE_URL || 'http://localhost:8000') }}/outcomes/ingest",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": { "timeout": 30000 }
+      }
+    },
+    {
+      "id": "n-resp",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [900, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "Outcome: Evri result": { "main": [[{ "node": "Build outcome payload", "type": "main", "index": 0 }]] },
+    "Build outcome payload": { "main": [[{ "node": "POST /outcomes/ingest", "type": "main", "index": 0 }]] },
+    "POST /outcomes/ingest": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

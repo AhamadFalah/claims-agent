@@ -281,10 +281,27 @@ class OutcomeBody(BaseModel):
     settlement_amount: float | None = None
 
 
+def _hydrate_claim_by_tracking(deps, barcode: str) -> Claim | None:
+    """Rebuild a claim from Attio when it isn't in the in-memory repo (e.g. after a
+    restart). Carries the claim's CURRENT Attio status so transition() validates."""
+    fetched = deps.attio.get_claim_by_tracking(barcode)
+    if not fetched:
+        return None
+    claim = _build_claim(fetched.get("correlation_id") or barcode, fetched)
+    status_val = fetched.get("status")
+    if status_val:
+        try:
+            claim.status = Status(status_val)
+        except ValueError:
+            pass
+    deps.repo.save(claim)
+    return claim
+
+
 @app.post("/outcomes/ingest")
 def ingest_outcome(body: OutcomeBody) -> dict:
     deps = get_deps()
-    claim = deps.repo.by_barcode(body.barcode)
+    claim = deps.repo.by_barcode(body.barcode) or _hydrate_claim_by_tracking(deps, body.barcode)
     if not claim:
         raise HTTPException(404, "no claim for barcode")
     if claim.status in (Status.ACCEPTED, Status.REJECTED):

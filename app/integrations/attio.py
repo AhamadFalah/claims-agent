@@ -77,6 +77,31 @@ class AttioClient:
             flat["merchant_name"] = self._company_name(merchant_entry["target_record_id"])
         return flat
 
+    def get_claim_by_tracking(self, tracking_number: str) -> dict | None:
+        """Return the first Attio claim matching this tracking number as a flat dict.
+
+        Used by outcome ingestion to resolve a claim when it is no longer in the
+        agent's in-memory repo (e.g. after a restart). tracking_number is not unique
+        in Attio, so the first match wins — fine for the demo.
+        """
+        if not self.enabled:
+            return None
+        with httpx.Client(timeout=15) as http:
+            resp = http.post(
+                f"{BASE}/objects/{OBJECT}/records/query",
+                headers=self._headers,
+                json={"filter": {"tracking_number": tracking_number}, "limit": 1},
+            )
+            resp.raise_for_status()
+            rows = resp.json().get("data", [])
+        if not rows:
+            return None
+        row = rows[0]
+        values = row.get("values", {})
+        flat = {k: _scalar(_first(v)) for k, v in values.items()}
+        flat["record_id"] = row.get("id", {}).get("record_id")
+        return flat
+
     def _company_name(self, record_id: str) -> str | None:
         try:
             with httpx.Client(timeout=10) as http:
