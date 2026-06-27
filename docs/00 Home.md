@@ -12,6 +12,7 @@ Map of content for our hackathon entry. One-day event, submit by **19:00**, demo
 - **What we say:** [[Pitch]]
 
 ## Technical reference
+- **Live build log (what's deployed + pending):** [[Build Log - Live State]]
 - **Build-level spec (code, API, services):** [[Technical Spec]]
 - **System flow + components:** [[Architecture]]
 - **Byte-exact CSV rules:** [[Evri File Formats]]
