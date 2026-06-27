@@ -17,7 +17,7 @@ Map of content for our hackathon entry. One-day event, submit by **19:00**, demo
 - **Byte-exact CSV rules:** [[Evri File Formats]]
 - **Status transitions + DB schema:** [[State Machine & Data]]
 - **Attio CRM schema & form intake:** [[Attio Schema Design]]
-- **Frontend Claims Portal:** [frontend/index.html](file:///Users/zameerejaz/Documents/GitHub/tech-europe/claims-agent-vault/frontend/index.html)
+- **Frontend Claims Portal (React/Vite):** [claims-form/](../claims-form/README.md)
 - **OMS / spreadsheet / channels / partner APIs:** [[Integrations Reference]]
 
 ## Go-to-market

@@ -12,3 +12,5 @@ data/batches/
 attio-docs-llms.txt
 node_modules/
 dist/
+
+build/
