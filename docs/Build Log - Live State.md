@@ -4,7 +4,7 @@
 > Snapshot: 2026-06-27.
 
 ## TL;DR
-The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `/process` agent route are built and verified end-to-end — **including a full live run through the n8n hosted form**.
+The Attio data model, the **live** n8n `outcome-replay` workflow (intake + Gemini validation + deterministic fusion + Firestore + outcome replay, all in one workflow, `id PQtAnonhUNBU8p7a`), and the FastAPI `/process` agent route are built and verified end-to-end — **including a full live run through the n8n hosted form**.
 
 ## Update — final live state (2026-06-27, later)
 - **Intake is now an n8n hosted Form** (`Form: claim-intake`), not the raw webhook. Public form URL: `https://abdulmateen77.app.n8n.cloud/form/claim-intake`. The Code node maps the form's field labels and normalizes the uploaded photo to binary `data`.
@@ -17,7 +17,18 @@ The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `
 - **The loop now drives to outcome.** `/outcomes/ingest` resolves a claim Raised → **Accepted** (with settlement) / **Rejected** / **DOR**, and **hydrates the claim from Attio** when it's not in the agent's in-memory repo (`AttioClient.get_claim_by_tracking`) — so it survives agent restarts. Verified live: two `Raised` claims resolved via the tunnel → Accepted (`settlement 25`) and DOR, hydrated from Attio after an agent restart. Tests: `tests/test_outcomes.py` (in-memory + hydration), suite 12/12 green.
 - **`n8n/outcome-replay.json`** — ops form ("Enter Evri Outcome": Tracking, outcome code, settlement) → `POST {AGENT}/outcomes/ingest` → Respond. **Deployed live** (id `Q58KdmBKv5UUrsae`, active) at `https://abdulmateen77.app.n8n.cloud/form/outcome-replay`. Verified live: resolved a Raised claim → Accepted (settlement 25).
 - **`claims-loop` reset to the clean canonical flow** (10 nodes) after the canvas collision: removed the duplicate flow / re-added merchant / stray native AfterShip nodes; CEILING=25; added an `Attach photo` Code node that re-injects the form's binary (HTTP nodes drop it) so the photo actually uploads.
-- ⚠️ **n8n canvas collision**: the live `claims-loop` was being hand-edited in the canvas (a full duplicate flow, a re-added `Upsert Merchant`, and native `AfterShip: Register Tracking` / `Get Status` nodes appeared). API-driven deploys and manual canvas edits fight each other. **Decide one owner for the workflow.** The repo's `n8n/claims-loop.json` is the clean, canonical version.
+- ⚠️ **n8n canvas collision**: the live `claims-loop` was being hand-edited in the canvas (a full duplicate flow, a re-added `Upsert Merchant`, and native `AfterShip: Register Tracking` / `Get Status` nodes appeared). API-driven deploys and manual canvas edits fight each other. **Decide one owner for the workflow.**
+
+## Update 3 — Gemini validation + Firestore merged into one workflow (2026-06-27, latest)
+- **Everything is now a single n8n workflow named `outcome-replay`** (`id PQtAnonhUNBU8p7a`). The former `claims-loop` intake and the separate outcome-replay ops form were merged onto one canvas (the `Outcome: Evri result` form is a second trigger in the same workflow). The standalone `n8n/claims-loop.json` artifact was removed from the repo; **`n8n/outcome-replay.json` is now the canonical export**.
+- **New validation stage (all LLM work done with the n8n AI Agent node):**
+  `Upload Photo (optional) → Build VALIDATING doc → Firestore: write VALIDATING → Respond (early 200) → AI Agent: validate claim (Gemini multimodal + Structured Output Parser) → Fuse + decide → Attio: update status → Firestore: write VALIDATED → Process Claim (FastAPI)`, with the agent's error output → `Build ERROR doc → Firestore: write ERROR`.
+- **Gemini is advisory only.** The agent returns a schema-locked verdict (`contract/verdict.schema.json`); the deterministic `Fuse + decide` node maps it to `AUTO_PROCEED → Raised`, `ESCALATE_HUMAN → OnHold`, failed gate → `AUTO_REJECT → Rejected`.
+- **Firebase/Firestore** added: per-claim docs `VALIDATING → VALIDATED → ERROR` via the REST API. Needs `FIREBASE_PROJECT_ID` + a Firebase auth header credential (or `FIREBASE_API_KEY`).
+- **Photo is optional** end-to-end: `Upload Photo` continues on a missing file (`onError`), the agent runs text-only when no image is attached, and the photo gate is no longer a hard reject in `Fuse + decide`.
+- **Best-practice early response:** the form is acked right after the `VALIDATING` write, so the Gemini/fusion work runs asynchronously and a slow/failed LLM call never hangs the form.
+- This repo was synced to match the live workflow (`n8n/outcome-replay.json`, `contract/verdict.schema.json`, `.env.example` Firebase vars). **No app code changed** — the FastAPI `/claims/{id}/process` and `/outcomes/ingest` contracts already match what n8n calls.
+- **Mubit agent memory** added to the validation agent: two `HTTP Request Tool` sub-nodes (`Mubit: recall memory` → `POST /v2/control/query`, `Mubit: store memory` → `POST /v2/control/ingest`) connected via `ai_tool`. The agent recalls past lessons before deciding and stores one after. Auth via `MUBIT_API_KEY` (Bearer, env — not hardcoded). ⚠️ Verify the Mubit base URL and the query body field name against console.mubit.ai (the public docs don't pin them down).
 
 ---
 

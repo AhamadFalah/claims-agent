@@ -49,7 +49,8 @@ claims-agent/
   tests/
     fixtures/evri_apr07_real.csv     # the golden file (656 bytes)
     test_evri_csv_snapshot.py        # byte-equality
-  n8n/claims-loop.json               # exported workflow
+  n8n/outcome-replay.json            # exported workflow (intake + validation + replay)
+  contract/verdict.schema.json       # Gemini validation verdict contract
   README.md
 ```
 
@@ -235,19 +236,29 @@ class AttioClient:
 Live status changes here are what judges watch move on the Attio board. If Attio Workflows are fiddly, n8n drives the loop and Attio is pure projection + UI - still satisfies "built on Attio".
 
 ## n8n orchestration
-Single workflow exported to `n8n/claims-loop.json`:
+Single workflow exported to `n8n/outcome-replay.json` (intake + Gemini validation +
+deterministic fusion + Firestore + outcome replay):
 ```
-Webhook(claim-intake)
-  -> HTTP POST /claims/extract
-  -> HTTP POST /claims/{id}/enrich
-  -> HTTP POST /claims/{id}/decide
-  -> IF status == Rejected -> end (logged)
-  -> HTTP POST /batches/generate
-  -> HTTP POST /batches/{id}/dispatch
-  -> Wait / Manual trigger (demo button)
-  -> HTTP POST /outcomes/ingest   (seeded outcome fixture)
+Form(claim-intake)
+  -> Generate correlation_id (normalize form fields)
+  -> IF courier == Evri  (else -> 422 reject, no records)
+  -> Attio upsert Person -> create Claim (status New)
+  -> Attach photo -> Attio upload Photo        (photo OPTIONAL; onError continues)
+  -> Build VALIDATING doc -> Firestore: write VALIDATING
+  -> Respond: processed (early 200 to the form)
+  -> AI Agent: validate claim   (Gemini multimodal; schema = contract/verdict.schema.json)
+        |-- ok  -> Fuse + decide (gates + confidence -> AUTO_PROCEED/ESCALATE_HUMAN/AUTO_REJECT)
+        |          -> Attio: update status (Raised/OnHold/Rejected)
+        |          -> Firestore: write VALIDATED
+        |          -> HTTP POST /claims/{correlation_id}/process   (FastAPI: byte-exact CSV -> dispatch)
+        \-- err -> Build ERROR doc -> Firestore: write ERROR
+
+Outcome form -> Build outcome payload -> HTTP POST /outcomes/ingest -> respond
 ```
-n8n owns the autonomous framing (trigger + chaining + per-node retry); FastAPI owns logic.
+n8n owns the autonomous framing (trigger + chaining + per-node retry) and now the
+Gemini validation + deterministic fusion; FastAPI owns the byte-exact generation,
+mock dispatch, and outcome ingest. The LLM verdict is **advisory only** — `Fuse +
+decide` is the authority (see `contract/verdict.schema.json`).
 
 ## Minima routing (side prize)
 ```python

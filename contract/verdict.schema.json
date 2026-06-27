@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Validation Verdict",
+  "description": "Schema-locked verdict returned by the Gemini validation agent in the n8n 'outcome-replay' workflow (node: Structured Output Parser). The agent is ADVISOR ONLY; the deterministic 'Fuse + decide' node owns the final accept/reject/escalate decision.",
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["GENUINE", "INCONSISTENT", "INSUFFICIENT_EVIDENCE", "SUSPECTED_FRAUD"]
+    },
+    "confidence": { "type": "number", "description": "0..1 confidence in the verdict" },
+    "claim_type": {
+      "type": "string",
+      "enum": ["DAMAGE", "LOSS", "SHORTAGE", "NON_DELIVERY"]
+    },
+    "damage_assessment": {
+      "type": "object",
+      "properties": {
+        "severity": { "type": "string", "enum": ["NONE", "MINOR", "MODERATE", "SEVERE", "TOTAL"] },
+        "damage_types": { "type": "array", "items": { "type": "string" } },
+        "affected_units": { "type": "integer" }
+      },
+      "required": ["severity", "damage_types", "affected_units"]
+    },
+    "cross_checks": {
+      "type": "object",
+      "properties": {
+        "matches_comment": { "type": "boolean" },
+        "photo_shows_claimed_damage": { "type": "boolean" },
+        "sku_or_label_legible": { "type": "boolean" }
+      },
+      "required": ["matches_comment", "photo_shows_claimed_damage", "sku_or_label_legible"]
+    },
+    "authenticity": {
+      "type": "object",
+      "properties": {
+        "looks_screenshot_or_reused": { "type": "boolean" },
+        "notes": { "type": "string" }
+      },
+      "required": ["looks_screenshot_or_reused", "notes"]
+    },
+    "inconsistencies": { "type": "array", "items": { "type": "string" } },
+    "acceptance_likelihood": { "type": "number", "description": "0..1 predicted carrier acceptance" },
+    "recommended_action": {
+      "type": "string",
+      "enum": ["AUTO_PROCEED", "ESCALATE_HUMAN", "REJECT"],
+      "description": "Advisory only — deterministic fuseDecision owns the real decision"
+    },
+    "rationale": { "type": "string" },
+    "evidence_citations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": [
+    "verdict",
+    "confidence",
+    "claim_type",
+    "damage_assessment",
+    "cross_checks",
+    "authenticity",
+    "inconsistencies",
+    "acceptance_likelihood",
+    "recommended_action",
+    "rationale",
+    "evidence_citations"
+  ]
+}

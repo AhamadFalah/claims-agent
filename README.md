@@ -18,7 +18,8 @@ app/            FastAPI agent service — the loop, one endpoint per step
   config/       channels.yaml · outcomes.yaml
 tests/          snapshot test (byte-equality) + state-machine tests
 tools/          build_fixture.py — regenerate the golden CSV
-n8n/            claims-loop.json — the orchestration workflow
+n8n/            outcome-replay.json — the deployed orchestration workflow
+contract/       verdict.schema.json — the Gemini validation verdict contract
 data/samples/   seeded claim email + outcomes for the demo
 docs/           the team knowledge base (open as an Obsidian vault)
 ```
@@ -37,9 +38,21 @@ Everything runs **without any API keys** — each integration falls back to a st
 so the demo works offline. Add keys in `.env` to go live with each partner tool.
 
 ## The loop
-`Read` (Gemini) → `Enrich` (Tavily) → `Decide` (rules) → `Generate` (byte-exact CSV)
-→ `Dispatch` (mock) → `Resolve` (state machine + outcome). Status writes back to
-Attio live. See [docs/Technical Spec](docs/Technical%20Spec.md).
+The deployed loop runs in n8n (`n8n/outcome-replay.json`) and calls this FastAPI
+service for the deterministic "hands" steps:
+
+`Form intake` → `Evri-only gate` → `Attio upsert Person + create Claim` →
+`Upload Photo` (optional) → `Firestore: VALIDATING` → **early 200 to the form** →
+`AI Agent: validate claim` (Gemini, multimodal, schema-locked verdict) →
+`Fuse + decide` (deterministic gates + confidence → AUTO_PROCEED / ESCALATE_HUMAN /
+AUTO_REJECT) → `Attio: update status` (Raised / OnHold / Rejected) →
+`Firestore: VALIDATED` → `POST /claims/{id}/process` (this service: byte-exact Evri
+CSV → mock dispatch). A separate **Outcome** form replays the 28-day Evri result via
+`POST /outcomes/ingest`, driving Raised → Accepted/Rejected/DOR.
+
+The Gemini agent is **advisory only** — the deterministic `Fuse + decide` node owns
+the real decision, and the verdict is locked to [`contract/verdict.schema.json`](contract/verdict.schema.json).
+See [docs/Technical Spec](docs/Technical%20Spec.md).
 
 ## Run the loop end-to-end (offline)
 ```bash
@@ -50,17 +63,19 @@ curl -s localhost:8000/claims/extract -H 'content-type: application/json' \
 # then /claims/{id}/enrich, /claims/{id}/decide, /batches/dispatch,
 # and /outcomes/ingest with a row from data/samples/outcomes.json
 ```
-Or import `n8n/claims-loop.json` into n8n and POST to its `claim-intake` webhook.
+Or import `n8n/outcome-replay.json` into n8n and submit the **`claim-intake`** form
+(it drives the full pipeline above). Set `AGENT_BASE_URL` in n8n to this service's URL.
 
 ## Partner technologies — what each does, and where in the code
 | Technology | Role in the project | Where |
 |---|---|---|
 | **Attio** | System of record + live case board; each claim is a record, status attribute = the pipeline. Upsert by `correlation_id`. | [`app/integrations/attio.py`](app/integrations/attio.py) |
-| **Google Gemini** | Reads the free-text claim email and returns a structured, schema-validated claim (judgment, not formatting). | [`app/agent/extract.py`](app/agent/extract.py) |
-| **n8n** | Orchestrates the autonomous loop — webhook trigger chains the agent endpoints. | [`n8n/claims-loop.json`](n8n/claims-loop.json) |
+| **Google Gemini** | In n8n: a multimodal **AI Agent** cross-checks the claim + photo and returns a schema-locked verdict ([`contract/verdict.schema.json`](contract/verdict.schema.json)). In the app: structured claim extraction. | `n8n/outcome-replay.json` · [`app/agent/extract.py`](app/agent/extract.py) |
+| **n8n** | Orchestrates the autonomous loop — Form trigger → Attio → Firestore → Gemini validation → deterministic fusion → FastAPI process. | [`n8n/outcome-replay.json`](n8n/outcome-replay.json) |
+| **Firebase / Firestore** | Per-claim validation document store; states `VALIDATING → VALIDATED → ERROR` written via the REST API as the claim moves through validation. | `n8n/outcome-replay.json` (Firestore nodes) |
 | **Tavily** | Enriches the claim (tracking status / address sanity). | [`app/agent/enrich.py`](app/agent/enrich.py) |
 | **Aikido** | Security scanning of this repo (CI/code scan). | repo-connected |
-| **Minima / Mubit** | Routes each LLM call to the cheapest model that clears the quality bar. | [`app/agent/route.py`](app/agent/route.py) |
+| **Minima / Mubit** | (1) Routes each LLM call to the cheapest model that clears the quality bar. (2) **Agent memory** for the n8n validation agent — two HTTP Request tools call Mubit control-http (`/v2/control/query` to recall, `/v2/control/ingest` to store) so the agent learns from past claims. | [`app/agent/route.py`](app/agent/route.py) · `n8n/outcome-replay.json` |
 
 Each integration calls the live service when its API key is set and otherwise
 falls back to a deterministic stub, so the project is runnable and testable with
