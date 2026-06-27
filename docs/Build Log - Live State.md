@@ -15,7 +15,8 @@ The Attio data model, the **live** n8n `claims-loop` workflow, and the FastAPI `
 
 ## Update 2 — outcome loop live (2026-06-27, later still)
 - **The loop now drives to outcome.** `/outcomes/ingest` resolves a claim Raised → **Accepted** (with settlement) / **Rejected** / **DOR**, and **hydrates the claim from Attio** when it's not in the agent's in-memory repo (`AttioClient.get_claim_by_tracking`) — so it survives agent restarts. Verified live: two `Raised` claims resolved via the tunnel → Accepted (`settlement 25`) and DOR, hydrated from Attio after an agent restart. Tests: `tests/test_outcomes.py` (in-memory + hydration), suite 12/12 green.
-- **`n8n/outcome-replay.json`** added — an importable ops form ("Enter Evri Outcome": Tracking, outcome code, settlement) → `POST {AGENT}/outcomes/ingest` → Respond. Validated via the n8n MCP. **Not auto-deployed** (see collision note).
+- **`n8n/outcome-replay.json`** — ops form ("Enter Evri Outcome": Tracking, outcome code, settlement) → `POST {AGENT}/outcomes/ingest` → Respond. **Deployed live** (id `Q58KdmBKv5UUrsae`, active) at `https://abdulmateen77.app.n8n.cloud/form/outcome-replay`. Verified live: resolved a Raised claim → Accepted (settlement 25).
+- **`claims-loop` reset to the clean canonical flow** (10 nodes) after the canvas collision: removed the duplicate flow / re-added merchant / stray native AfterShip nodes; CEILING=25; added an `Attach photo` Code node that re-injects the form's binary (HTTP nodes drop it) so the photo actually uploads.
 - ⚠️ **n8n canvas collision**: the live `claims-loop` was being hand-edited in the canvas (a full duplicate flow, a re-added `Upsert Merchant`, and native `AfterShip: Register Tracking` / `Get Status` nodes appeared). API-driven deploys and manual canvas edits fight each other. **Decide one owner for the workflow.** The repo's `n8n/claims-loop.json` is the clean, canonical version.
 
 ---
