@@ -13,7 +13,7 @@
       "notes": "Step 2: generate correlation_id (UUID) BEFORE any Attio call so retries are idempotent. Also normalizes form fields and derives the merchant SERVER-SIDE (the customer never picks it). Sets parcel_value = merchant ceiling (the value submitted to Evri), kept separate from cost_value (customer-stated).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const item = $input.first();\nconst inp = item.json || {};\nconst b = inp.body || inp;\n\nfunction pick() {\n  for (let i = 0; i < arguments.length; i++) {\n    const k = arguments[i];\n    if (b[k] !== undefined && b[k] !== null && b[k] !== '') return b[k];\n  }\n  return '';\n}\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Single business -> one fixed Evri claim ceiling (the cap submitted to Evri).\n// Client credit = min(cost_value, CEILING); parcel_value submitted = CEILING.\nconst CEILING = 20;\n\n// Map the n8n Form fields (keys are the field labels) to normalized slugs.\nconst email = String(pick('customer email address', 'email')).trim().toLowerCase();\nlet name = String(pick('name', 'customer_name', 'full name')).trim();\nif (!name && email) name = email.split('@')[0];\nconst phone = String(pick('phone number', 'phone', 'phone_number')).trim();\nconst order_number = String(pick('Order Number', 'order_number')).trim();\nconst courier = String(pick('Courier', 'courier') || 'Evri').trim();\nconst claim_raw = String(pick('Claim for Loss or Damage', 'claim_type') || 'Lost');\nconst claim_type = /damage/i.test(claim_raw) ? 'Damage' : 'Lost'; // form 'Loss' -> Attio 'Lost'\nconst parcel_count = Number(pick('Number of Parcel Claim', 'parcel_count') || 1);\nconst tracking_number = String(pick('Tracking Number 1', 'tracking_number')).trim();\nconst additional_tracking = String(pick('More Tracking Number if any', 'additional_tracking')).trim();\nconst delivery_postcode = String(pick('Delivery Destination Postcode', 'delivery_postcode', 'postcode')).trim();\nconst customer_comment = String(pick('What is the reason for your claim?', 'customer_comment', 'comment')).trim();\nconst cost_value = Number(pick('Cost Value', 'cost_value') || 0);\nconst parcel_value = CEILING;\n\nconst out = { json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment\n} };\n\n// Normalize whatever file the form uploaded to binary 'data' for the photo node.\nconst inb = item.binary || {};\nconst bk = Object.keys(inb)[0];\nif (bk) out.binary = { data: inb[bk] };\nreturn [out];"
+        "jsCode": "const item = $input.first();\nconst inp = item.json || {};\nconst b = inp.body || inp;\n\nfunction pick() {\n  for (let i = 0; i < arguments.length; i++) {\n    const k = arguments[i];\n    if (b[k] !== undefined && b[k] !== null && b[k] !== '') return b[k];\n  }\n  return '';\n}\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Single business -> one fixed Evri claim ceiling (the cap submitted to Evri).\n// Client credit = min(cost_value, CEILING); parcel_value submitted = CEILING.\nconst CEILING = 25;\n\n// Map the n8n Form fields (keys are the field labels) to normalized slugs.\nconst email = String(pick('customer email address', 'email')).trim().toLowerCase();\nlet name = String(pick('name', 'customer_name', 'full name')).trim();\nif (!name && email) name = email.split('@')[0];\nconst phone = String(pick('phone number', 'phone', 'phone_number')).trim();\nconst order_number = String(pick('Order Number', 'order_number')).trim();\nconst courier = String(pick('Courier', 'courier') || 'Evri').trim();\nconst claim_raw = String(pick('Claim for Loss or Damage', 'claim_type') || 'Lost');\nconst claim_type = /damage/i.test(claim_raw) ? 'Damage' : 'Lost'; // form 'Loss' -> Attio 'Lost'\nconst parcel_count = Number(pick('Number of Parcel Claim', 'parcel_count') || 1);\nconst tracking_number = String(pick('Tracking Number 1', 'tracking_number')).trim();\nconst additional_tracking = String(pick('More Tracking Number if any', 'additional_tracking')).trim();\nconst delivery_postcode = String(pick('Delivery Destination Postcode', 'delivery_postcode', 'postcode')).trim();\nconst customer_comment = String(pick('What is the reason for your claim?', 'customer_comment', 'comment')).trim();\nconst cost_value = Number(pick('Cost Value', 'cost_value') || 0);\nconst parcel_value = CEILING;\n\nconst out = { json: {\n  correlation_id: uuidv4(),\n  email, name, phone,\n  courier, claim_type,\n  tracking_number, additional_tracking, order_number,\n  delivery_postcode, parcel_count, cost_value, parcel_value,\n  customer_comment\n} };\n\n// Normalize whatever file the form uploaded to binary 'data' for the photo node.\nconst inb = item.binary || {};\nconst bk = Object.keys(inb)[0];\nif (bk) out.binary = { data: inb[bk] };\nreturn [out];"
       }
     },
     {
@@ -125,6 +125,21 @@
       }
     },
     {
+      "id": "node-attach",
+      "name": "Attach photo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ],
+      "notes": "Re-injects the form's uploaded file (binary 'data') that the HTTP nodes dropped, so Upload Photo can attach it.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const bin = $('Generate correlation_id').first().binary || {};\nreturn [{ json: $json, binary: bin }];"
+      }
+    },
+    {
       "id": "node-photo",
       "name": "Upload Photo",
       "type": "n8n-nodes-base.httpRequest",
@@ -149,7 +164,7 @@
             {
               "parameterType": "formBinaryData",
               "name": "file",
-              "inputDataFieldName": "Photographic_Evidence_supporting_Claim"
+              "inputDataFieldName": "data"
             },
             {
               "parameterType": "formData",
@@ -396,7 +411,7 @@
       "main": [
         [
           {
-            "node": "Upload Photo",
+            "node": "Attach photo",
             "type": "main",
             "index": 0
           }
@@ -430,6 +445,17 @@
         [
           {
             "node": "Generate correlation_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach photo": {
+      "main": [
+        [
+          {
+            "node": "Upload Photo",
             "type": "main",
             "index": 0
           }
